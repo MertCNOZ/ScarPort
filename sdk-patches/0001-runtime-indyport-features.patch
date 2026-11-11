@@ -1,0 +1,1916 @@
+diff --git a/runtime/app/app.h b/runtime/app/app.h
+index 229e2fa..6f91d5a 100644
+--- a/runtime/app/app.h
++++ b/runtime/app/app.h
+@@ -22,11 +22,20 @@ struct Settings {
+     uint32_t render_percent = 100;   // of the output height
+     uint32_t fps_cap = 60;           // 0 unlimited, kFpsCapRefresh the monitor's refresh rate
+     bool vsync = true;
+-    uint32_t aniso = 0;              // 0 as the game asks
++    uint32_t aniso = 16;             // 0 as the game asks
+     bool custom_textures = true;     // images in textures\replacement\ beside the exe replace the game's
+     bool dump_textures = false;      // each texture once into textures\dumps\ beside the exe
+     uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS
++    bool full_width = true;            // widescreen: the screen's targets made wider, full detail across the screen
++    uint32_t fov = 100;                // 70-120: percent of the game's field of view (the game's camera hook)
++    uint32_t aspect = 0;               // 0 widescreen: fills the screen with a wider view, 1 the console's 4:3, 2 stretched
++    bool fxaa = false;                 // FXAA on the final picture
++    uint32_t sharpen = 40;             // 0-100: contrast adaptive sharpening of the final picture
++    bool video_filter = true;          // movies scaled up with a Catmull-Rom filter instead of bilinear
++    bool ui_upscale = true;            // sharper fonts, menus and HUD: screen space textures upscaled (gpu/ui_upscale.h)
++    std::string texture_packs;         // built-in packs in textures\packs\ beside the exe, comma separated
+     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
++    std::string game_path;                 // the game's disc image (.iso) or its folder, UTF-8; empty: assets
+ };
+ 
+ Settings& Get();
+@@ -43,10 +52,15 @@ Mode Output();
+ float RenderScale(uint32_t guest_height);
+ // the output is 3:2 or wider: the console reports a widescreen TV and the frame is shown 16:9, else 4:3 as on a 4:3 TV
+ bool Widescreen();
++// how much wider than 4:3 the picture is shown: the output's aspect over 4:3 in the widescreen mode, else 1. The game
++// widens its view by it (Hor+) and screen space HUD pieces are drawn narrower by it, so nothing looks stretched
++float WideFactor();
++// the aspect the frame is shown at on the output
++float ShownAspect();
+ 
+ std::filesystem::path ExeDir();
+-// the game in assets (game_files.cpp): its folder and this executable's xbe, from the extracted files or a disc
+-// image (.iso), which it mounts as D:; false after telling the player what is missing
++// the game (game_files.cpp), from the settings' game_path first, then assets: its folder and this executable's xbe,
++// from the extracted files or a disc image (.iso), which it mounts as D:; false after telling the player what is missing
+ struct GameFiles {
+     std::filesystem::path dir;
+     std::vector<uint8_t> xbe;
+diff --git a/runtime/app/game_files.cpp b/runtime/app/game_files.cpp
+index a7ddee4..7cfb465 100644
+--- a/runtime/app/game_files.cpp
++++ b/runtime/app/game_files.cpp
+@@ -1,4 +1,5 @@
+-// The game in assets: its files, or a disc image (.iso) with this executable's xbe on it. The xbe must be the one
++// The game: the folder or disc image chosen in the settings (game_path), else assets beside the exe or above it; its
++// files, or a disc image (.iso) with this executable's xbe on it. The xbe must be the one
+ // this executable was recompiled from; another release's would run its own data under this code.
+ #ifndef WIN32_LEAN_AND_MEAN
+ #define WIN32_LEAN_AND_MEAN
+@@ -70,53 +71,83 @@ std::string Sha1(const std::vector<uint8_t>& data) {
+     return hex;
+ }
+ 
++// the settings' game_path, UTF-8
++fs::path ChosenPath() {
++    const std::string& s = Get().game_path;
++    if (s.empty()) return {};
++    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), int(s.size()), nullptr, 0);
++    std::wstring w(size_t(n), L' ');
++    MultiByteToWideChar(CP_UTF8, 0, s.data(), int(s.size()), w.data(), n);
++    return fs::path(w);
++}
++
+ bool FindGame(GameFiles& game) {
+-    fs::path assets = FindAssets();
+-    std::vector<fs::path> isos;
++    // where to look, in order: the folder or disc image chosen in the settings (the launcher), then assets; in a
++    // folder its extracted files before its disc images
++    struct Place {
++        fs::path path;
++        bool iso;
++    };
++    std::vector<Place> places;
+     std::error_code ec;
+-    if (!assets.empty())
+-        for (auto& e : fs::directory_iterator(assets, ec)) {
++    auto add_dir = [&](const fs::path& dir) {
++        places.push_back({dir, false});
++        std::vector<fs::path> found;
++        for (auto& e : fs::directory_iterator(dir, ec)) {
+             std::wstring ext = e.path().extension().wstring();
+             std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t c) { return wchar_t(std::towlower(c)); });
+-            if (ext == L".iso" && e.is_regular_file(ec)) isos.push_back(e.path());
++            if (ext == L".iso" && e.is_regular_file(ec)) found.push_back(e.path());
+         }
+-    std::sort(isos.begin(), isos.end());
++        std::sort(found.begin(), found.end());
++        for (auto& iso : found) places.push_back({iso, true});
++    };
++    if (fs::path chosen = ChosenPath(); !chosen.empty()) {
++        if (fs::is_directory(chosen, ec)) add_dir(chosen);
++        else if (fs::is_regular_file(chosen, ec)) places.push_back({chosen, true});
++        else LOGR("Game: %s from the settings is not there", Get().game_path.c_str());
++    }
++    if (fs::path assets = FindAssets(); !assets.empty()) add_dir(assets);
+ 
+-    // the first copy with this xbe wins, the extracted files before any image; another release is kept to offer
++    // the first copy with this xbe wins; another release is kept to offer
+     GameFiles other;
+     std::unique_ptr<kernel::Disc> other_disc;
+     fs::path other_name;
+-    auto consider = [&](const fs::path& name, std::vector<uint8_t> xbe, std::unique_ptr<kernel::Disc> disc) {
++    auto consider = [&](const fs::path& dir, const fs::path& name, std::vector<uint8_t> xbe,
++                        std::unique_ptr<kernel::Disc> disc) {
+         std::string sha = Sha1(xbe);
+         bool match = Runs(sha);
+         LOGR("Game: %s in %s, sha1 %s%s", IMAGE_XBE, name.string().c_str(), sha.c_str(), match ? "" : ", another release");
+         if (match) {
+-            game = {assets, std::move(xbe)};
++            game = {dir, std::move(xbe)};
+             kernel::MountDisc(std::move(disc));
+             return true;
+         }
+         if (other_name.empty()) {
+-            other = {assets, std::move(xbe)};
++            other = {dir, std::move(xbe)};
+             other_disc = std::move(disc);
+             other_name = name;
+         }
+         return false;
+     };
+ 
+-    std::vector<uint8_t> xbe;
+-    if (!assets.empty() && ReadHostFile(assets / IMAGE_XBE, xbe) && consider(assets, std::move(xbe), nullptr)) return true;
+-    for (const fs::path& iso : isos) {
++    for (const Place& place : places) {
++        std::vector<uint8_t> xbe;
++        if (!place.iso) {
++            if (ReadHostFile(place.path / IMAGE_XBE, xbe) && consider(place.path, place.path, std::move(xbe), nullptr))
++                return true;
++            continue;
++        }
+         auto disc = std::make_unique<kernel::Disc>();
+         std::string error;
+-        if (!disc->Open(iso, error)) {
+-            LOGW("game: %s: %s", iso.string().c_str(), error.c_str());
++        if (!disc->Open(place.path, error)) {
++            LOGR("Game: %s: %s", place.path.string().c_str(), error.c_str());
+             continue;
+         }
+         if (!disc->Load(IMAGE_XBE, xbe)) {
+-            LOGW("game: %s has no %s", iso.string().c_str(), IMAGE_XBE);
++            LOGR("Game: %s has no %s", place.path.string().c_str(), IMAGE_XBE);
+             continue;
+         }
+-        if (consider(iso, std::move(xbe), std::move(disc))) return true;
++        if (consider(place.path.parent_path(), place.path, std::move(xbe), std::move(disc))) return true;
+     }
+ 
+     if (other_name.empty()) {
+diff --git a/runtime/app/main.cpp b/runtime/app/main.cpp
+index e36f7ac..9a07980 100644
+--- a/runtime/app/main.cpp
++++ b/runtime/app/main.cpp
+@@ -73,7 +73,7 @@ void DumpThreads() {
+     for (auto& t : kernel::Threads())
+         if (t->ctx) {
+             LOGI("thread %X", t->id);
+-            kernel::LogGuestStack(*t->ctx, 32);
++            kernel::LogGuestStack(*t->ctx, 512);
+         }
+ }
+ 
+diff --git a/runtime/app/settings.cpp b/runtime/app/settings.cpp
+index 075b3b7..fef4f20 100644
+--- a/runtime/app/settings.cpp
++++ b/runtime/app/settings.cpp
+@@ -54,6 +54,15 @@ void Load() {
+     s.dump_textures = t["dump_textures"].value_or(s.dump_textures);
+     s.texture_dump_format = std::min(t["texture_dump_format"].value_or(s.texture_dump_format), 1u);
+     s.join_ip = t["join_ip"].value_or(s.join_ip);
++    s.texture_packs = t["texture_packs"].value_or(s.texture_packs);
++    s.ui_upscale = t["ui_upscale"].value_or(s.ui_upscale);
++    s.video_filter = t["video_filter"].value_or(s.video_filter);
++    s.sharpen = std::min(t["sharpen"].value_or(s.sharpen), 100u);
++    s.aspect = std::min(t["aspect"].value_or(s.aspect), 2u);
++    s.full_width = t["full_width"].value_or(s.full_width);
++    s.fxaa = t["fxaa"].value_or(s.fxaa);
++    s.fov = std::clamp(t["fov"].value_or(s.fov), 70u, 120u);
++    s.game_path = t["game_path"].value_or(s.game_path);
+     for (const Option& o : kGame.options) {
+         if (o.flag) *o.flag = t[o.key].value_or(*o.flag);
+         else *o.value = t[o.key].value_or(*o.value);
+@@ -75,7 +84,16 @@ toml::table Table() {
+                   {"custom_textures", s.custom_textures},
+                   {"dump_textures", s.dump_textures},
+                   {"texture_dump_format", int64_t(s.texture_dump_format)},
+-                  {"join_ip", s.join_ip}};
++                  {"join_ip", s.join_ip},
++                  {"game_path", s.game_path},
++                  {"texture_packs", s.texture_packs},
++                  {"ui_upscale", s.ui_upscale},
++                  {"video_filter", s.video_filter},
++                  {"sharpen", int64_t(s.sharpen)},
++                  {"aspect", int64_t(s.aspect)},
++                  {"full_width", s.full_width},
++                  {"fxaa", s.fxaa},
++                  {"fov", int64_t(s.fov)}};
+     for (const Option& o : kGame.options) {
+         if (o.flag) t.insert(o.key, *o.flag);
+         else t.insert(o.key, int64_t(*o.value));
+@@ -118,6 +136,7 @@ Mode Output() {
+ }
+ 
+ bool Widescreen() {
++    if (Get().aspect == 1) return false;  // the console's 4:3
+     // asked per frame and per HUD quad: the desktop mode lookup only runs when the resolution setting changes
+     static std::atomic<uint64_t> key{~0ull};
+     static std::atomic<bool> wide{true};
+@@ -130,6 +149,19 @@ bool Widescreen() {
+     return wide;
+ }
+ 
++Mode CachedOutput();
++
++float ShownAspect() {
++    if (!Widescreen()) return 4.0f / 3.0f;
++    Mode m = CachedOutput();
++    return m.height ? float(m.width) / float(m.height) : 16.0f / 9.0f;
++}
++
++float WideFactor() {
++    if (Get().aspect != 0 || !Widescreen()) return 1.0f;
++    return std::clamp(ShownAspect() / (4.0f / 3.0f), 1.0f, 3.0f);
++}
++
+ // Output for every frame: the desktop mode lookup reads the registry, so it runs again only when the resolution
+ // setting or the window's monitor changes
+ Mode CachedOutput() {
+diff --git a/runtime/audio/xaudio2.cpp b/runtime/audio/xaudio2.cpp
+index f95ebf5..c00e839 100644
+--- a/runtime/audio/xaudio2.cpp
++++ b/runtime/audio/xaudio2.cpp
+@@ -8,6 +8,9 @@
+ #include <windows.h>
+ #include <xaudio2.h>
+ 
++#include <cstdio>
++#include <cstdlib>
++#include <string>
+ #include <thread>
+ #include <vector>
+ 
+@@ -16,6 +19,43 @@
+ 
+ namespace audio {
+ 
++namespace {
++// XBE_AUDIO_DUMP=<file.wav>: everything sent to the speakers, 48 kHz stereo float, for checking the sound offline
++struct Dump {
++    FILE* f = nullptr;
++    uint32_t bytes = 0;
++    Dump() {
++        if (const char* path = std::getenv("XBE_AUDIO_DUMP")) {
++            // one file a process: a title that relaunches itself does not overwrite its predecessor's
++            std::string name = path;
++            size_t dot = name.rfind('.');
++            name.insert(dot == std::string::npos ? name.size() : dot, "-" + std::to_string(GetCurrentProcessId()));
++            f = std::fopen(name.c_str(), "wb");
++            if (f) Header();
++            LOGR("audio: recording the output to %s", name.c_str());
++        }
++    }
++    void Header() {
++        auto u32 = [&](uint32_t v) { std::fwrite(&v, 4, 1, f); };
++        auto u16 = [&](uint16_t v) { std::fwrite(&v, 2, 1, f); };
++        std::fseek(f, 0, SEEK_SET);
++        std::fwrite("RIFF", 1, 4, f), u32(36 + bytes), std::fwrite("WAVEfmt ", 1, 8, f), u32(16);
++        u16(3), u16(2), u32(kRate), u32(kRate * 8), u16(8), u16(32);
++        std::fwrite("data", 1, 4, f), u32(bytes);
++        std::fseek(f, 0, SEEK_END);
++    }
++    void Write(const float* b, uint32_t frames) {
++        if (!f) return;
++        std::fwrite(b, 8, frames, f);
++        bytes += frames * 8;
++        if (bytes % (kRate * 8) < frames * 8) {  // about once a second the sizes are right, the file stays readable
++            Header();
++            std::fflush(f);
++        }
++    }
++};
++}  // namespace
++
+ void StartOutput(std::function<void(float*, uint32_t)> render) {
+     std::thread([render] {
+         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+@@ -44,13 +84,14 @@ void StartOutput(std::function<void(float*, uint32_t)> render) {
+         constexpr uint32_t kSlots = kMaxQueued + 1;
+         std::vector<float> bufs(kSlots * kFrames * 2);
+         uint32_t depth = kMinQueued;
++        Dump dump;
+         for (uint32_t n = 0;;) {
+             XAUDIO2_VOICE_STATE st;
+             voice->GetState(&st, XAUDIO2_VOICE_NOSAMPLESPLAYED);
+             // a starved voice crackles: queue one buffer more each time, up to kMaxQueued
+             if (n && !st.BuffersQueued && depth < kMaxQueued) {
+                 depth++;
+-                LOGI("audio: output starved, queueing %u ms", depth * 10);
++                LOGR("audio: output starved, queueing %u ms", depth * 10);
+             }
+             if (st.BuffersQueued >= depth) {
+                 Sleep(2);
+@@ -58,6 +99,7 @@ void StartOutput(std::function<void(float*, uint32_t)> render) {
+             }
+             float* b = &bufs[(n % kSlots) * kFrames * 2];
+             render(b, kFrames);
++            dump.Write(b, kFrames);
+             XAUDIO2_BUFFER xb{};
+             xb.AudioBytes = kFrames * 8;
+             xb.pAudioData = reinterpret_cast<const BYTE*>(b);
+diff --git a/runtime/core/log.cpp b/runtime/core/log.cpp
+index 7e6507d..b72ef2d 100644
+--- a/runtime/core/log.cpp
++++ b/runtime/core/log.cpp
+@@ -1,3 +1,4 @@
++#include <cstring>
+ #include "core/log.h"
+ 
+ #include <algorithm>
+@@ -52,7 +53,15 @@ void Init(const std::string& dir, const std::string& prefix, bool append) {
+ const std::string& Path() { return g_path; }
+ 
+ void Write(Level lv, const char* fmt, ...) {
+-    if (!kVerbose && lv < Level::Error) return;
++    // XBE_LOG=info (or warn) also writes those lines in a release build, for debugging a player's problem
++    static const Level floor = [] {
++        const char* v = std::getenv("XBE_LOG");
++        if (!v) return Level::Error;
++        if (!std::strcmp(v, "info")) return Level::Info;
++        if (!std::strcmp(v, "warn")) return Level::Warn;
++        return Level::Error;
++    }();
++    if (!kVerbose && lv < floor) return;
+     char msg[4096];
+     va_list ap;
+     va_start(ap, fmt);
+diff --git a/runtime/gpu/d3d12.cpp b/runtime/gpu/d3d12.cpp
+index 3f9d4e7..4fed2ec 100644
+--- a/runtime/gpu/d3d12.cpp
++++ b/runtime/gpu/d3d12.cpp
+@@ -13,6 +13,7 @@
+ #include <wrl/client.h>
+ 
+ #include <algorithm>
++#include <bit>
+ #include <array>
+ #include <chrono>
+ #include <cmath>
+@@ -114,7 +115,7 @@ bool CaptureOn() {
+ }
+ 
+ const char* kBlitHlsl = R"(
+-cbuffer B : register(b1) { float4 uvrect; float4 opts; };
++cbuffer B : register(b1) { float4 uvrect; float4 opts; float4 opts2; };
+ Texture2D img : register(t0);
+ Texture2D lut : register(t1);
+ SamplerState ls : register(s0);
+@@ -134,6 +135,42 @@ float4 psmain(O i) : SV_Target {
+     for (int y = 0; y < n; y++)
+         for (int x = 0; x < n; x++) c += img.SampleLevel(ls, i.uv + px * ((float2(x, y) + 0.5) / n - 0.5), 0);
+     c /= n * n;
++    // contrast adaptive sharpening (after AMD FidelityFX CAS): the cross of neighbouring source texels pulls the
++    // centre apart from them, less where the area is already contrasty, so edges do not ring
++    // FXAA (the classic PC form): blends along the edge direction found from the corners' brightness, keeping the
++    // wider blend only where it stays inside the neighbourhood's range
++    if (opts2.y > 0 && n == 1) {
++        float2 size;
++        img.GetDimensions(size.x, size.y);
++        float2 t = 1.0 / size;
++        float3 lw = float3(0.299, 0.587, 0.114);
++        float nw = dot(img.SampleLevel(ls, i.uv + float2(-1, -1) * t, 0).rgb, lw);
++        float ne = dot(img.SampleLevel(ls, i.uv + float2(1, -1) * t, 0).rgb, lw);
++        float sw = dot(img.SampleLevel(ls, i.uv + float2(-1, 1) * t, 0).rgb, lw);
++        float se = dot(img.SampleLevel(ls, i.uv + float2(1, 1) * t, 0).rgb, lw);
++        float m = dot(c.rgb, lw);
++        float lmin = min(m, min(min(nw, ne), min(sw, se))), lmax = max(m, max(max(nw, ne), max(sw, se)));
++        float2 dir = float2(-((nw + ne) - (sw + se)), (nw + sw) - (ne + se));
++        float reduce = max((nw + ne + sw + se) * 0.25 * (1.0 / 8.0), 1.0 / 128.0);
++        dir = clamp(dir / (min(abs(dir.x), abs(dir.y)) + reduce), -8.0, 8.0) * t;
++        float3 a = 0.5 * (img.SampleLevel(ls, i.uv + dir * (1.0 / 3.0 - 0.5), 0).rgb +
++                          img.SampleLevel(ls, i.uv + dir * (2.0 / 3.0 - 0.5), 0).rgb);
++        float3 b = a * 0.5 + 0.25 * (img.SampleLevel(ls, i.uv - dir * 0.5, 0).rgb +
++                                     img.SampleLevel(ls, i.uv + dir * 0.5, 0).rgb);
++        float lb = dot(b, lw);
++        if (lmax - lmin > 0.04) c.rgb = (lb < lmin || lb > lmax) ? a : b;
++    }
++    if (opts2.x > 0 && n == 1) {
++        float2 size;
++        img.GetDimensions(size.x, size.y);
++        float2 t = 1.0 / size;
++        float3 a = img.SampleLevel(ls, i.uv + float2(0, -t.y), 0).rgb, b = img.SampleLevel(ls, i.uv + float2(-t.x, 0), 0).rgb;
++        float3 d = img.SampleLevel(ls, i.uv + float2(t.x, 0), 0).rgb, e = img.SampleLevel(ls, i.uv + float2(0, t.y), 0).rgb;
++        float3 mn = min(c.rgb, min(min(a, b), min(d, e))), mx = max(c.rgb, max(max(a, b), max(d, e)));
++        float3 amp = sqrt(saturate(min(mn, 1.0 - mx) / max(mx, 1e-4)));
++        float3 w = -amp * lerp(0.125, 0.2, opts2.x);
++        c.rgb = saturate((c.rgb + w * (a + b + d + e)) / (1.0 + 4.0 * w));
++    }
+     c.rgb *= opts.w;
+     if (opts.x > 0) c.rgb = float3(lut.Sample(ps, float2(c.r, 0.5)).r, lut.Sample(ps, float2(c.g, 0.5)).g, lut.Sample(ps, float2(c.b, 0.5)).b);
+     return float4(c.rgb, opts.y > 0 ? c.a : 1);
+@@ -345,6 +382,7 @@ struct Tex {
+     const Tex* swap = nullptr;  // the texture pack's image drawn in its place
+     uint64_t pack_key = 0;      // its pack image is still loading
+     uint32_t pack_gen = 0;      // texturedumper::Generation the key was taken at, 0 after new bytes
++    bool screen = false;        // drawn in screen space (2D: fonts, menus, HUD), for ui_upscale
+ };
+ 
+ struct PsoKey {
+@@ -385,6 +423,8 @@ struct BlitOptions {
+     bool alpha = false;       // the source's alpha, else 1
+     uint32_t taps = 1;        // n x n box filter per pixel
+     float mul = 1;            // colour scale
++    float sharpen = 0;        // contrast adaptive sharpening, 0 off to 1
++    bool fxaa = false;        // FXAA before the sharpening
+     DXGI_FORMAT rtv = kBgra;  // the target's format
+     bool over = false;        // premultiplied over the target, which keeps its alpha
+ };
+@@ -736,6 +776,16 @@ private:
+     uint32_t recent_used_next_ = 0;
+     DrawBinds binds_;
+     std::unordered_map<uint64_t, Tex> textures_;  // by data address, a P8 texture's with its palette's above
++    bool screen_draw_ = false;  // the draw binding its textures is in screen space (ui_upscale)
++    // a movie frame drawn on a widened view: how it is fitted (FitMovie)
++    struct MovieFit {
++        uint32_t data = 0;
++        int top = -1, bottom = -1;  // the rows with picture seen so far in this movie
++        uint64_t frame = 0;
++    } movie_;
++    bool movie_draw_ = false;
++    float movie_sx_ = 1, movie_sy_ = 1;
++    void FitMovie(const TextureDesc& d);
+     std::unordered_map<uint64_t, Tex> pack_textures_;  // texture pack images by key, kept for the run
+     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> blit_psos_;
+     Extension* ext_ = nullptr;
+@@ -768,6 +818,7 @@ private:
+     uint32_t bb_w_ = 0;
+     uint32_t bb_h_ = 0;
+     float scale_ = 1.0f;
++    float wide_ = 1.0f;  // full_width: app::WideFactor the screen's targets were made with
+     // surfaces locked without a wait: copies in flight, the newest finished one goes to guest memory
+     struct Late {
+         ComPtr<ID3D12Resource> rb[kFrames];
+@@ -962,6 +1013,7 @@ void D3D12Backend::CreateGammaLut() {
+ 
+ void D3D12Backend::LoadSettings() {
+     scale_ = app::RenderScale(guest_h_);
++    wide_ = app::Get().full_width ? app::WideFactor() : 1.0f;
+     texturedumper::Update();
+     ext_ = g_extension.get();
+     if (ext_) {
+@@ -1081,7 +1133,11 @@ void D3D12Backend::ReleaseTarget(std::unordered_map<uint64_t, Target>::iterator
+ bool D3D12Backend::CreateTargetResource(Target& t, const Surface& s) {
+     float sc = scale_;
+     if (ext_) ext_->MakeTarget(s, t.depth, t.gw, t.gh, sc, t.fmt);
+-    t.w = std::max(1u, uint32_t(std::lround(t.gw * sc)));
++    // widescreen: the screen's 4:3 targets (and their 4:3 fractions) are made wider by the view's widening, so the
++    // picture stretched to the screen's shape keeps one host pixel per screen pixel across; others stay square
++    float sx = sc;
++    if (!ext_ && t.gw * 3 == t.gh * 4) sx = sc * wide_;
++    t.w = std::max(1u, uint32_t(std::lround(t.gw * sx)));
+     t.h = std::max(1u, uint32_t(std::lround(t.gh * sc)));
+     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+     D3D12_RESOURCE_DESC td = Texture2DDesc(DXGI_FORMAT_UNKNOWN, t.w, t.h);
+@@ -1410,8 +1466,9 @@ void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect
+     dev_->CreateShaderResourceView(lut_.Get(), &sv, Cpu(srv_heap_.Get(), slot + 1, srv_inc_));
+     uint32_t si = EnsureBlitSamplers();
+     Alloc cb = Upload(256, 256);
+-    float c[8] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3],
+-                  o.gamma ? 1.0f : 0.0f, o.alpha ? 1.0f : 0.0f, float(o.taps), o.mul};
++    float c[12] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3],
++                   o.gamma ? 1.0f : 0.0f, o.alpha ? 1.0f : 0.0f, float(o.taps), o.mul,
++                   o.sharpen, o.fxaa ? 1.0f : 0.0f, 0, 0};
+     std::memcpy(cb.cpu, c, sizeof(c));
+     DrawFullScreen(EnsureBlitPipeline(o.rtv, o.over), cb.gpu, slot, si);
+ }
+@@ -1425,6 +1482,25 @@ ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const
+     if (it != blobs_.end()) return it->second.Get();
+     ComPtr<ID3DBlob> code;
+     ComPtr<ID3DBlob> err;
++    // the disk cache beside the exe (shadercache\<hash>.cso): a shader compiled on an earlier run is loaded, so new
++    // effects do not hitch on the compiler again. The hash covers the source, entry and profile.
++    static const std::filesystem::path cache_dir = app::ExeDir() / "shadercache";
++    wchar_t name[32];
++    swprintf(name, 32, L"%016llx.cso", static_cast<unsigned long long>(hash));
++    std::filesystem::path cached = cache_dir / name;
++    if (FILE* f = _wfopen(cached.c_str(), L"rb")) {
++        std::fseek(f, 0, SEEK_END);
++        long size = std::ftell(f);
++        std::fseek(f, 0, SEEK_SET);
++        bool ok = size > 0 && SUCCEEDED(D3DCreateBlob(SIZE_T(size), &code)) &&
++                  std::fread(code->GetBufferPointer(), 1, size_t(size), f) == size_t(size);
++        std::fclose(f);
++        if (ok) {
++            blobs_[hash] = code;
++            return code.Get();
++        }
++        code.Reset();
++    }
+     PerfScope perf_compile{g_perf.compile};
+     g_perf.shaders++;
+     HRESULT hr = D3DCompile(src.data(), src.size(), nullptr, nullptr, nullptr, entry, profile,
+@@ -1436,6 +1512,17 @@ ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const
+         return nullptr;
+     }
+     blobs_[hash] = code;
++    // written beside then renamed, so a run that stops halfway never leaves a cut file to load
++    std::error_code ec;
++    std::filesystem::create_directories(cache_dir, ec);
++    std::filesystem::path part = cached;
++    part += L".part";
++    if (FILE* f = _wfopen(part.c_str(), L"wb")) {
++        bool ok = std::fwrite(code->GetBufferPointer(), 1, code->GetBufferSize(), f) == code->GetBufferSize();
++        ok = std::fclose(f) == 0 && ok;
++        if (ok) std::filesystem::rename(part, cached, ec);
++        if (!ok || ec) std::filesystem::remove(part, ec);
++    }
+     return code.Get();
+ }
+ 
+@@ -1651,10 +1738,11 @@ void D3D12Backend::ExpandPoints(D3D12_GRAPHICS_PIPELINE_STATE_DESC& d, bool spri
+     d.RasterizerState.FrontCounterClockwise = FALSE;
+ }
+ 
++// vertical: a widened target is wider than this across (points and the half pixel shift are near enough with it)
+ float D3D12Backend::TargetScale() const {
+     const Target* t = bound_rt_ ? bound_rt_ : bound_ds_;
+-    if (!t || !t->gw) return 1;
+-    return float(t->w) / float(t->gw);
++    if (!t || !t->gh) return 1;
++    return float(t->h) / float(t->gh);
+ }
+ 
+ // the XDK's screen space offset puts the console's positions half a pixel right and down of the host's, unless a
+@@ -1705,7 +1793,7 @@ ID3D12Resource* D3D12Backend::BindTargetTexture(const State& s, int stage, const
+     info.kind = kTex2D;
+     // a pass shrinking it averages each tap over a console texel, else upscaled taps skip texels and ghost
+     Target* rt = FindTarget(s.rt, false);
+-    float k = float(t.w) / (t.gw * stages.k[stage]);
++    float k = float(t.h) / (t.gh * stages.k[stage]);
+     if (!t.depth && box && k > kUpscaledMin && rt && rt != &t && (t.gw > rt->gw || t.gh > rt->gh)) {
+         stages.wide[stage] = k;
+         info.flags |= kTexWide;
+@@ -1874,6 +1962,11 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const
+             tx.pack_gen = 0;
+         }
+     }
++    // the first time a texture is drawn in screen space it is keyed again, for its sharper copy
++    if (screen_draw_ && !tx.screen && texturedumper::Upscaling()) {
++        tx.screen = true;
++        tx.pack_gen = 0;
++    }
+     if (tx.pack_gen != texturedumper::Generation()) LatchPackKey(tx, d, fi, colours);
+     if (tx.pack_key) LatchPackImage(tx);
+     const Tex& drawn = tx.swap ? *tx.swap : tx;
+@@ -1892,6 +1985,7 @@ void D3D12Backend::LatchPackKey(Tex& tx, const TextureDesc& d, const FormatInfo&
+     texturedumper::Dump(key, d, p, colours);
+     // dumping alone keys the bytes too: the pack image is not drawn then
+     tx.pack_key = texturedumper::Replacing() ? key : 0;
++    if (tx.screen && texturedumper::Upscale(key, d, p, colours)) tx.pack_key = key;
+ }
+ 
+ // the pack image for tx's bytes once it has loaded; textures with the same bytes share its GPU copy
+@@ -1952,6 +2046,11 @@ ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, DrawTexture
+     const FormatInfo& fi = Format(d.format);
+     info.kind = TextureKind(d);
+     info.rect = d.linear;
++    // a movie frame (a large linear texture in a screen space draw) is scaled up with a sharper filter
++    if (d.linear && screen_draw_ && d.width >= 256 && d.height >= 192 && info.kind == kTex2D) {
++        if (app::Get().video_filter) info.flags |= kTexSmooth;
++        FitMovie(d);
++    }
+ 
+     // rendered by the GPU: sample the target itself; DXT data loaded over a target's memory is not it
+     uint64_t alt = 0;
+@@ -2151,7 +2250,7 @@ bool OffsetsPolygons(const State& s, Topology topology) {
+ 
+ // polygon offset slopes are per console pixel, an upscaled target's pixels are smaller
+ float HostSlopeScale(const State& s, const Target* ds) {
+-    return Bits(SimpleState(s, kMSlopeScale)) * (ds ? float(ds->w) / ds->gw : 1.0f);
++    return Bits(SimpleState(s, kMSlopeScale)) * (ds ? float(ds->h) / ds->gh : 1.0f);
+ }
+ 
+ void D3D12Backend::KeyDepthStencil(const State& s, const Assembled& a, PsoKey& k) {
+@@ -2527,9 +2626,106 @@ void D3D12Backend::CaptureDraw(const State& s, uint32_t prim, uint32_t count, co
+     CaptureTextures(s, stages);
+ }
+ 
+-// small draws: their inputs and constants; then ends the draw's line
++// a draw's first vertices as the draw reads them (index + base vertex), as floats, with the indices that pick them
++void CaptureRawVertices(FILE* f, const Assembled& a) {
++    for (uint32_t b = 0; b < a.buffer_count; b++) {
++        const VertexBuffer& vb = a.buffers[b];
++        if (!vb.src || !vb.stride) continue;
++        fprintf(f, "\n     raw b%u at guest %08X stride %u bytes %u base %d", b, uint32_t(vb.src - kernel::g_base),
++                vb.stride, vb.bytes, a.base_vertex);
++        for (uint32_t i = 0; i < 6; i++) {
++            uint32_t idx = i;
++            if (a.index_src && a.index_count) {
++                if (i >= a.index_count) break;
++                idx = a.index16 ? static_cast<const uint16_t*>(a.index_src)[i] : static_cast<const uint32_t*>(a.index_src)[i];
++            }
++            int64_t v = int64_t(idx) + a.base_vertex;
++            if (v < 0 || uint64_t(v + 1) * vb.stride > vb.bytes) {
++                fprintf(f, "\n       i%u -> v%lld outside the buffer", i, (long long)v);
++                continue;
++            }
++            fprintf(f, "\n       i%u v%lld", i, (long long)v);
++            for (uint32_t o = 0; o + 4 <= vb.stride && o < 64; o += 4) {
++                float x;
++                std::memcpy(&x, vb.src + v * vb.stride + o, 4);
++                fprintf(f, " %g", x);
++            }
++        }
++    }
++    if (a.index_src && a.index_count) {
++        fprintf(f, "\n     indices");
++        for (uint32_t i = 0; i < std::min<uint32_t>(a.index_count, 12); i++)
++            fprintf(f, " %u", a.index16 ? static_cast<const uint16_t*>(a.index_src)[i]
++                                         : static_cast<const uint32_t*>(a.index_src)[i]);
++    }
++}
++
++// the least and greatest x of the vertices a screen space draw uses, from its raw XYZRHW positions; false when
++// they cannot be read (the converted path, or a position outside the buffer)
++bool ScreenSpanX(const Assembled& a, float& lo, float& hi, float* zmax = nullptr) {
++    if (!a.vertices.empty()) {
++        // the converted copy: float4 per present register, the position (v0) first
++        uint32_t regs = uint32_t(std::popcount(a.regs));
++        if (!(a.regs & 1) || !regs || !a.vertex_count || a.vertices.size() < size_t(a.vertex_count) * regs * 4) return false;
++        lo = 1e30f;
++        hi = -1e30f;
++        if (zmax) *zmax = -1e30f;
++        for (uint32_t v = 0; v < a.vertex_count; v++) {
++            float x = a.vertices[size_t(v) * regs * 4];
++            lo = std::min(lo, x);
++            hi = std::max(hi, x);
++            if (zmax) *zmax = std::max(*zmax, a.vertices[size_t(v) * regs * 4 + 2]);
++        }
++        return true;
++    }
++    const VertexElement& e = a.elements[0];
++    if (e.buffer >= a.buffer_count) return false;
++    const VertexBuffer& vb = a.buffers[e.buffer];
++    if (!vb.src || !vb.stride) return false;
++    uint32_t n = a.index_count ? a.index_count : a.draw_count;
++    if (!n || n > 4096) return false;
++    lo = 1e30f;
++    hi = -1e30f;
++    if (zmax) *zmax = -1e30f;
++    for (uint32_t i = 0; i < n; i++) {
++        uint32_t idx = i;
++        if (a.index_src && a.index_count)
++            idx = a.index16 ? static_cast<const uint16_t*>(a.index_src)[i] : static_cast<const uint32_t*>(a.index_src)[i];
++        int64_t v = int64_t(idx) + a.base_vertex;
++        if (v < 0 || uint64_t(v) * vb.stride + e.offset + 12 > vb.bytes) return false;
++        float x, z;
++        std::memcpy(&x, vb.src + v * vb.stride + e.offset, 4);
++        std::memcpy(&z, vb.src + v * vb.stride + e.offset + 8, 4);
++        lo = std::min(lo, x);
++        hi = std::max(hi, x);
++        if (zmax) *zmax = std::max(*zmax, z);
++    }
++    return true;
++}
++
++// small draws: their inputs and constants; screen space and small draws: their raw vertices; then ends the line.
++// Screen space draws also save the guest memory around their first buffer, 1 KB before to 8 KB after, as
++// vb_<draw>_<guest address>.bin
+ void D3D12Backend::EndDrawCapture(const State& s, const Assembled& a, uint32_t count, const DrawConstants& c) {
+     if (count <= kQuadVertices) CaptureInputs(s, a, c);
++    if (a.pretransformed || count <= 64) CaptureRawVertices(cap_, a);
++    if (a.pretransformed && a.buffer_count && a.buffers[0].src) {
++        // the stream's vertex buffer header: Common, Data (physical), Lock
++        uint32_t hdr = s.streams[0].vb;
++        if (hdr) {
++            uint32_t w[3];
++            std::memcpy(w, kernel::g_base + hdr, sizeof(w));
++            fprintf(cap_, "\n     stream0 header %08X common %08X data %08X lock %08X stride %u", hdr, w[0], w[1], w[2],
++                    s.streams[0].stride);
++        }
++        uint32_t at = uint32_t(a.buffers[0].src - kernel::g_base) - 1024;
++        char name[48];
++        snprintf(name, sizeof(name), "vb_%04u_%08X.bin", cap_i_ - 1, at);
++        if (FILE* f = _wfopen((cap_dir_ / name).c_str(), L"wb")) {
++            fwrite(kernel::g_base + at, 1, 1024 + 8192, f);
++            fclose(f);
++        }
++    }
+     fputc('\n', cap_);
+ }
+ 
+@@ -2628,16 +2824,19 @@ void D3D12Backend::SetViewportScissor(const State& s, uint32_t gw) {
+     float W = float(bound_rt_ ? bound_rt_->w : bound_ds_->w);
+     float H = float(bound_rt_ ? bound_rt_->h : bound_ds_->h);
+     D3D12_VIEWPORT vp{0, 0, W, H, 0, 1};
++    // across and down apart: a widened target is wider than it is tall in host pixels per console pixel
++    const Target* bt = bound_rt_ ? bound_rt_ : bound_ds_;
+     float sc = W / gw;
++    float scy = bt && bt->gh ? H / float(bt->gh) : sc;
+     LONG x0 = LONG(s.viewport.x * sc);
+-    LONG y0 = LONG(s.viewport.y * sc);
++    LONG y0 = LONG(s.viewport.y * scy);
+     LONG x1 = LONG((s.viewport.x + s.viewport.w) * sc);
+-    LONG y1 = LONG((s.viewport.y + s.viewport.h) * sc);
++    LONG y1 = LONG((s.viewport.y + s.viewport.h) * scy);
+     if (s.scissor_count) {
+         x0 = std::max(x0, LONG(s.scissors[0] * sc));
+-        y0 = std::max(y0, LONG(s.scissors[1] * sc));
++        y0 = std::max(y0, LONG(s.scissors[1] * scy));
+         x1 = std::min(x1, LONG(s.scissors[2] * sc));
+-        y1 = std::min(y1, LONG(s.scissors[3] * sc));
++        y1 = std::min(y1, LONG(s.scissors[3] * scy));
+     }
+     D3D12_RECT rect{std::clamp<LONG>(x0, 0, LONG(W)), std::clamp<LONG>(y0, 0, LONG(H)),
+                     std::clamp<LONG>(x1, 0, LONG(W)), std::clamp<LONG>(y1, 0, LONG(H))};
+@@ -2834,6 +3033,8 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
+ 
+     // stage textures, then the pixel shader made for them
+     DrawTextures stages;
++    screen_draw_ = a.pretransformed;
++    movie_draw_ = false;
+     if (!BindStageTexturesAndTargets(s, stages)) return;
+     PixelKey pk = MakePixelKey(s, stages.info);
+     pk.quad = sh.quad;
+@@ -2855,6 +3056,25 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
+     GuestExtent size;
+     SurfaceSize(bound_rt_ ? s.rt : s.zs, size.w, size.h);
+     DrawConstants c{};
++    c.hud[0] = 1;
++    c.hud[1] = 1;
++    // a widened view (app::WideFactor) or another field of view: HUD pieces, drawn in screen space on the main target
++    // at depth 0 (menus, text, icons; this game leaves the depth test on for them), are scaled about the centre as
++    // the 3D view is, so they keep their shape and the 3D items drawn into them (the inventory wheel) stay inside
++    // them. Full width draws (fades, loading pictures, movies) and anything placed at a depth stay as they are
++    if (a.pretransformed && size.w == guest_w_ && size.h == guest_h_) {
++        float wide = app::WideFactor(), lo = 0, hi = 0, zmax = 0;
++        float fov = float(std::clamp(app::Get().fov, 70u, 120u)) / 100.0f;
++        if ((wide > 1.01f || std::fabs(fov - 1) > 1e-3f) && ScreenSpanX(a, lo, hi, &zmax) &&
++            hi - lo < 0.9f * float(size.w) && zmax <= 1e-3f) {
++            c.hud[0] = 1.0f / (wide * fov);
++            c.hud[1] = 1.0f / fov;
++        }
++    }
++    if (movie_draw_ && a.pretransformed) {
++        c.hud[0] = movie_sx_;
++        c.hud[1] = movie_sy_;
++    }
+     UploadConstants(s, sh, k, stages, size, c);
+     if (ext_) binds_ = {};
+ 
+@@ -2877,9 +3097,9 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
+ 
+ // a guest rect scaled to the target and clamped to it
+ D3D12_RECT ScaledRect(const Target& t, int x0, int y0, int x1, int y1) {
+-    float sc = float(t.w) / t.gw;
+-    return {std::clamp<LONG>(LONG(x0 * sc), 0, t.w), std::clamp<LONG>(LONG(y0 * sc), 0, t.h),
+-            std::clamp<LONG>(LONG(x1 * sc), 0, t.w), std::clamp<LONG>(LONG(y1 * sc), 0, t.h)};
++    float sx = float(t.w) / t.gw, sy = float(t.h) / t.gh;
++    return {std::clamp<LONG>(LONG(x0 * sx), 0, t.w), std::clamp<LONG>(LONG(y0 * sy), 0, t.h),
++            std::clamp<LONG>(LONG(x1 * sx), 0, t.w), std::clamp<LONG>(LONG(y1 * sy), 0, t.h)};
+ }
+ 
+ // rs: the rects buffer, reused across targets
+@@ -3055,8 +3275,8 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
+     D3D12_CPU_DESCRIPTOR_HANDLE rh = Cpu(rtv_heap_.Get(), dst_t.view, rtv_inc_);
+     cl_->OMSetRenderTargets(1, &rh, FALSE, nullptr);
+     float gw = src_t.gw * l.kx, gh = src_t.gh * l.ky;  // the source in the guest pixels the rects use
+-    float src_scale = float(src_t.w) / gw;
+-    float dst_scale = float(dst_t.w) / dst_t.gw;
++    float src_scale = float(src_t.h) / gh;
++    float dst_scale = float(dst_t.w) / dst_t.gw, dst_scale_y = float(dst_t.h) / dst_t.gh;
+     bool listed = l.count && l.src_rects;
+     uint32_t n = listed ? l.count : 1;
+     for (uint32_t i = 0; i < n; i++) {
+@@ -3065,7 +3285,7 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
+         DrawnRect r{.x0 = 0, .y0 = 0, .x1 = whole_w, .y1 = whole_h};
+         if (listed) r = ReadDrawnRect(l.src_rects, l.dst_points, i);
+         if (r.x1 <= r.x0 || r.y1 <= r.y0) continue;
+-        D3D12_VIEWPORT vp{r.dx * dst_scale, r.dy * dst_scale, (r.x1 - r.x0) * dst_scale, (r.y1 - r.y0) * dst_scale,
++        D3D12_VIEWPORT vp{r.dx * dst_scale, r.dy * dst_scale_y, (r.x1 - r.x0) * dst_scale, (r.y1 - r.y0) * dst_scale_y,
+                           0, 1};
+         LONG right = std::min(LONG(vp.TopLeftX + vp.Width), LONG(dst_t.w));
+         LONG bottom = std::min(LONG(vp.TopLeftY + vp.Height), LONG(dst_t.h));
+@@ -3075,7 +3295,7 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
+         cl_->RSSetScissorRects(1, &scissor);
+         binds_ = {};
+         float uv[4] = {r.x0 / gw, r.y0 / gh, (r.x1 - r.x0) / gw, (r.y1 - r.y0) / gh};
+-        uint32_t taps = uint32_t(std::ceil(std::max(src_scale / dst_scale, 1.0f) - kTapsSlack));
++        uint32_t taps = uint32_t(std::ceil(std::max(src_scale / dst_scale_y, 1.0f) - kTapsSlack));
+         float mul = 1 / dst_t.range;
+         BlitOptions o{.alpha = true, .taps = taps, .mul = mul, .rtv = dst_t.fmt};
+         Blit(src_res, src_t.fmt, uv, o);
+@@ -3091,7 +3311,7 @@ void D3D12Backend::CopyByRegion(const Target& src_t, ID3D12Resource* src_res, D3
+     Transition(dst_t.res.Get(), dst_t.state, D3D12_RESOURCE_STATE_COPY_DEST);
+     D3D12_TEXTURE_COPY_LOCATION dl{dst_t.res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+     D3D12_TEXTURE_COPY_LOCATION sl{src_res, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+-    float dst_scale = float(dst_t.w) / dst_t.gw;
++    float dst_scale = float(dst_t.w) / dst_t.gw, dst_scale_y = float(dst_t.h) / dst_t.gh;
+     bool listed = l.count && l.src_rects;
+     uint32_t n = listed ? l.count : 1;
+     for (uint32_t i = 0; i < n; i++) {
+@@ -3101,15 +3321,15 @@ void D3D12Backend::CopyByRegion(const Target& src_t, ID3D12Resource* src_res, D3
+         if (listed) {
+             GuestRect r = ReadGuestRect(l.src_rects, i);
+             b.left = ScaleUnsigned(r.left, dst_scale);
+-            b.top = ScaleUnsigned(r.top, dst_scale);
++            b.top = ScaleUnsigned(r.top, dst_scale_y);
+             b.right = std::min(ScaleUnsigned(r.right, dst_scale), src_t.w);
+-            b.bottom = std::min(ScaleUnsigned(r.bottom, dst_scale), src_t.h);
++            b.bottom = std::min(ScaleUnsigned(r.bottom, dst_scale_y), src_t.h);
+             dx = b.left;
+             dy = b.top;
+             if (l.dst_points) {
+                 GuestPoint p = ReadGuestPoint(l.dst_points, i);
+                 dx = ScaleUnsigned(p.x, dst_scale);
+-                dy = ScaleUnsigned(p.y, dst_scale);
++                dy = ScaleUnsigned(p.y, dst_scale_y);
+             }
+         }
+         if (b.right <= b.left || b.bottom <= b.top || dx >= dst_t.w || dy >= dst_t.h) continue;
+@@ -3230,10 +3450,56 @@ void D3D12Backend::UploadGammaRamp() {
+     cl_->CopyTextureRegion(&dl, 0, 0, 0, &sl, nullptr);
+ }
+ 
++// A movie (the logos, the map transitions that are the loading screens) is a 4:3 frame. On a widened view it is
++// shown in proportion: zoomed until its picture fills the height, so letterbox bars are cut off, but never past the
++// screen's width (a 4:3 picture keeps bars at the sides). The rows with picture are found by their brightness, and
++// the zoom only eases out during a movie, so it does not jump around with dark frames.
++void D3D12Backend::FitMovie(const TextureDesc& d) {
++    movie_draw_ = true;
++    float k = app::WideFactor();
++    if (k <= 1.01f) {
++        movie_sx_ = movie_sy_ = 1;
++        return;
++    }
++    if (movie_.data != d.data || presents_ > movie_.frame + 30) movie_ = {};
++    movie_.data = d.data;
++    movie_.frame = presents_;
++    const uint8_t* p = static_cast<const uint8_t*>(kernel::HostPtr(d.data));
++    uint32_t pitch = d.pitch ? d.pitch : d.width * 4;
++    bool yuv = d.format == 0x24 || d.format == 0x25;
++    uint32_t bpp = yuv ? 2 : pitch >= d.width * 4 ? 4 : 2;
++    int top = -1, bottom = -1;
++    if (p && pitch >= d.width * bpp) {
++        for (uint32_t y = 0; y < d.height; y += 2) {
++            const uint8_t* row = p + size_t(y) * pitch;
++            bool lit = false;
++            for (uint32_t x = 8; x + 8 < d.width && !lit; x += 6) {
++                const uint8_t* px = row + size_t(x) * bpp;
++                uint32_t l = yuv ? px[d.format == 0x24 ? 0 : 1] : std::max({px[0], px[1], px[2]});
++                lit = l > 48;
++            }
++            if (lit) {
++                if (top < 0) top = int(y);
++                bottom = int(y);
++            }
++        }
++    }
++    if (top >= 0) {
++        movie_.top = movie_.top < 0 ? top : std::min(movie_.top, top);
++        movie_.bottom = std::max(movie_.bottom, bottom);
++    }
++    float h = float(d.height), content = h / k;  // before any picture: as a 16:9 letterbox
++    if (movie_.top >= 0) {
++        float centre = h * 0.5f;
++        content = 2.0f * std::max(centre - float(movie_.top), float(movie_.bottom + 2) - centre);
++    }
++    movie_sy_ = std::clamp(h / std::max(content, 1.0f), 1.0f, k);
++    movie_sx_ = movie_sy_ / k;
++}
++
+ void D3D12Backend::BlitFrame(Target& t) {
+-    // 16:9 when the console reports a widescreen display, else 4:3
+-    bool wide = app::Widescreen();
+-    float aspect = wide ? 16.0f / 9.0f : 4.0f / 3.0f;
++    // the output's aspect when the console reports a widescreen display (widened or stretched), else 4:3
++    float aspect = app::ShownAspect();
+     float w = float(bb_w_);
+     float h = float(bb_h_);
+     float vw = std::min(w, h * aspect);
+@@ -3245,7 +3511,8 @@ void D3D12Backend::BlitFrame(Target& t) {
+     cl_->RSSetScissorRects(1, &scissor);
+     binds_ = {};
+     Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+-    Blit(t.res.Get(), t.fmt, uv, {.gamma = gamma_});
++    float sharpen = float(std::min(app::Get().sharpen, 100u)) / 100.0f;
++    Blit(t.res.Get(), t.fmt, uv, {.gamma = gamma_, .sharpen = sharpen, .fxaa = app::Get().fxaa});
+ }
+ 
+ void D3D12Backend::RenderUi() {
+@@ -3324,12 +3591,12 @@ void LogPerf() {
+         Perf& p = g_perf;
+         double n = double(perf_frames);
+         double host = p.draw + p.clear + p.copy + p.present + p.sync;
+-        LOGI("perf: %.1f fps %.2f ms/frame | host %.2f (draw %.2f: assemble %.2f bind %.2f [check %.2f, upload %.2f] "
++        LOGR("perf: %.1f fps %.2f ms/frame | host %.2f (draw %.2f: assemble %.2f bind %.2f [check %.2f, upload %.2f] "
+              "compile %.2f; clear %.2f copy %.2f sync %.2f present %.2f [swap %.2f wait %.2f]) other %.2f",
+              n * 1000.0 / el, el / n, host / n, p.draw / n, p.assemble / n, p.bind / n, p.sig / n, p.texup / n,
+              p.compile / n, p.clear / n, p.copy / n, p.sync / n, p.present / n, p.swap / n, p.wait / n,
+              (el - host) / n);
+-        LOGI("perf: title thread per frame: recording %.2f ms, waiting %.2f ms (%.1f waits: read-back %.2f "
++        LOGR("perf: title thread per frame: recording %.2f ms, waiting %.2f ms (%.1f waits: read-back %.2f "
+              "resource %.2f fence %.2f flush %.2f copy %.2f, next frame %.2f) | read-backs waited for: %.1f lock, "
+              "%.1f NOOVERWRITE",
+              g_perf_capture_ns.exchange(0) / n / 1e6, g_perf_wait_ns.exchange(0) / n / 1e6,
+@@ -3338,7 +3605,7 @@ void LogPerf() {
+              g_perf_wait_kind_ns[3].exchange(0) / n / 1e6, g_perf_wait_kind_ns[4].exchange(0) / n / 1e6,
+              g_perf_wait_kind_ns[5].exchange(0) / n / 1e6, g_perf_sync_block.exchange(0) / n,
+              g_perf_sync_late.exchange(0) / n);
+-        LOGI("perf: per frame %.0f draws (%.0f raw) %.0fk verts %.1f MB upload %.1f overflow | %.0f checks %.2f MB "
++        LOGR("perf: per frame %.0f draws (%.0f raw) %.0fk verts %.1f MB upload %.1f overflow | %.0f checks %.2f MB "
+              "hashed | %.1f tex uploads %.2f MB, %.1f new tex, %.1f new targets, %.1f target uploads, %.1f shrinks, "
+              "%.1f read-backs %.1f late | %llu shaders %llu psos this second",
+              p.draws / n, p.raw / n, p.verts / n / 1000.0, p.upload / n / 1048576.0, p.overflow / n, p.sigs / n,
+@@ -3394,12 +3661,14 @@ void D3D12Backend::WaitGpuFrame(uint64_t n) {
+ void D3D12Backend::ApplySettings() {
+     if (texturedumper::Update()) ReleasePackTextures();
+     float want = app::RenderScale(guest_h_);
++    float want_wide = app::Get().full_width ? app::WideFactor() : 1.0f;
+     bool remake = ext_ && ext_->Settings();
+-    if (std::fabs(want - scale_) > 1e-4f || remake) {
++    if (std::fabs(want - scale_) > 1e-4f || std::fabs(want_wide - wide_) > 1e-4f || remake) {
+         Flush();
+         for (auto& [key, tg] : targets_) (tg.depth ? free_dsv_ : free_rtv_).push_back(tg.view);
+         targets_.clear();
+         scale_ = want;
++        wide_ = want_wide;
+         if (ext_) ext_->Reset(*this);
+         bound_rt_ = bound_ds_ = nullptr;
+     }
+diff --git a/runtime/gpu/shaders.cpp b/runtime/gpu/shaders.cpp
+index 9ff7b67..c293ac1 100644
+--- a/runtime/gpu/shaders.cpp
++++ b/runtime/gpu/shaders.cpp
+@@ -55,6 +55,7 @@ const char* kCommonTail = R"(    float4 spread[4];
+     float4 lt[56];
+     float4 rtshift;
+     float4 zparams;
++    float4 hud;
+ };
+ )";
+ 
+@@ -404,6 +405,7 @@ std::string TexFetch(const PixelKey& k, int i) {
+         return F("float dp%d%s = dot(tc%d.xyz, %s);\n", n, coord == n ? "" : "n", coord, DotInput(map, src).c_str());
+     };
+     auto tex2d = [&](const std::string& uv) {
++        if (t.flags & kTexSmooth) return F("cubictap(tex%d, smp%d, %s, texsize[%d].xy)", i, i, uv.c_str(), i);
+         if (t.flags & kTexWide) return F("spreadtap(tex%d, smp%d, %s, spread[%d], %s)", i, i, uv.c_str(), i, Hooks().ReadScale(t).c_str());
+         return F("tex%d.Sample(smp%d, %s)", i, i, uv.c_str());
+     };
+@@ -470,7 +472,30 @@ const char* kPsSbyte = R"(
+ // unorm to byte b, less lo under 128 or hi from 128, over d
+ float3 sbyte(float3 u, float lo, float hi, float d) { float3 b = u * 255; return (b - (b >= 128 ? hi : lo)) / d; }
+ )";
+-const char* kPsTail = R"(float4 spreadtap(Texture2D t, SamplerState s, float2 uv, float4 w, float m) {
++const char* kPsTail = R"(// Catmull-Rom over 4x4 texels, each read at its centre so the sampler's own filter does not matter
++float4 cubictap(Texture2D t, SamplerState s, float2 uv, float2 size) {
++    float2 p = uv * size - 0.5, f = frac(p), b = floor(p);
++    float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f)), w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
++    float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f)), w3 = f * f * (-0.5 + 0.5 * f);
++    float2 w[4] = {w0, w1, w2, w3};
++    float4 c = 0, mn = 1, mx = 0, t00 = 0, t10 = 0, t01 = 0, t11 = 0;
++    for (int y = 0; y < 4; y++)
++        for (int x = 0; x < 4; x++) {
++            float4 v = t.SampleLevel(s, (b + float2(x - 1, y - 1) + 0.5) / size, 0);
++            c += v * (w[x].x * w[y].y);
++            if (x == 1 && y == 1) t00 = v;
++            if (x == 2 && y == 1) t10 = v;
++            if (x == 1 && y == 2) t01 = v;
++            if (x == 2 && y == 2) t11 = v;
++        }
++    // sharpened at the movie's own scale: away from the bilinear blend of the 4 nearest texels, held between their
++    // least and greatest so edges get no halos (an unsharp mask a final pass at screen scale cannot give a 6x frame)
++    float4 bil = lerp(lerp(t00, t10, f.x), lerp(t01, t11, f.x), f.y);
++    mn = min(min(t00, t10), min(t01, t11));
++    mx = max(max(t00, t10), max(t01, t11));
++    return saturate(clamp(c + 1.0 * (c - bil), mn, mx));
++}
++float4 spreadtap(Texture2D t, SamplerState s, float2 uv, float4 w, float m) {
+     float4 c = 0;
+     int n = (int)w.z;
+     for (int y = 0; y < n; y++)
+@@ -769,7 +794,9 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
+     if (pretransformed) {
+         s += "    float4 rhw = " + v(0, "float4(0,0,0,1)") + ";\n";
+         s += "    float w = rhw.w == 0 ? 1 : 1 / rhw.w;\n";
+-        s += "    oPos = float4(rhw.xy, rhw.z / surf.z, w);\n";
++        // on a widened view the HUD is drawn narrower about the centre and movies are fitted (hud.xy, 1 otherwise)
++        s += "    oPos = float4((rhw.x - surf.x * 0.5) * hud.x + surf.x * 0.5, (rhw.y - surf.y * 0.5) * hud.y + surf.y * 0.5,"
++             " rhw.z / surf.z, w);\n";
+     } else {
+         s += "    float4 ip = float4(" + v(0, "float4(0,0,0,1)") + ".xyz, 1);\n";
+         s += "    float4 cp = mul(ip, wvp);\n";
+@@ -927,6 +954,8 @@ std::string PixelHlsl(const PixelKey& k) {
+             if (t.shadow)
+                 body += F("float4 t%d = shadow(tex%d, smp%d, ", i, i, i) + TexUv(t, i, F("tc%d.xy / tc%d.w", i, i)) +
+                         F(", tc%d.z / tc%d.w, %d, i.pos.xy, texsize[%d].xy);\n", i, i, t.shadow, i);
++            else if (t.kind == kTex2D && (t.flags & kTexSmooth))
++                body += F("float4 t%d = cubictap(tex%d, smp%d, %s, texsize[%d].xy);\n", i, i, i, uv.c_str(), i);
+             else if (t.kind == kTex2D && (t.flags & kTexWide))
+                 body += F("float4 t%d = spreadtap(tex%d, smp%d, %s, spread[%d], %s);\n", i, i, i, uv.c_str(), i, Hooks().ReadScale(t).c_str());
+             else if (t.kind == kTex2D) body += F("float4 t%d = tex%d.Sample(smp%d, %s);\n", i, i, i, uv.c_str());
+diff --git a/runtime/gpu/shaders.h b/runtime/gpu/shaders.h
+index 08d9bff..d14ae3f 100644
+--- a/runtime/gpu/shaders.h
++++ b/runtime/gpu/shaders.h
+@@ -19,6 +19,7 @@ struct TexInfo {
+ enum : uint8_t {
+     kTexWide = 4,    // an upscaled target shrunk by the pass: each tap averaged over console texels
+     kTexTarget = 8,  // a render target, read where the console's pixel offset puts it (DrawConstants::rtshift)
++    kTexSmooth = 16, // a movie frame drawn in screen space: sampled with a Catmull-Rom filter (video_filter)
+ };
+ 
+ struct PixelKey {
+@@ -105,6 +106,7 @@ struct DrawConstants {
+     float lt[8][7][4];   // per light: diffuse, specular, ambient, position range, direction falloff, attenuation, cos theta/2 phi/2
+     float rtshift[4];    // per kTexTarget stage: host pixels its reads move along x and y, negative up and left
+     float zparams[4];    // ReversedDepthHlsl: a w buffer's scale (0 for a z buffer), its far w, the polygon offset
++    float hud[4];        // screen space draws: x and y scale about the target centre (HUD pieces, movies on a widened view)
+ };
+ 
+ }  // namespace gpu
+diff --git a/runtime/gpu/texturedumper.cpp b/runtime/gpu/texturedumper.cpp
+index 612db6c..b086fbf 100644
+--- a/runtime/gpu/texturedumper.cpp
++++ b/runtime/gpu/texturedumper.cpp
+@@ -31,6 +31,7 @@
+ #include "app/app.h"
+ #include "core/log.h"
+ #include "gpu/shaders.h"
++#include "gpu/ui_upscale.h"
+ 
+ using Microsoft::WRL::ComPtr;
+ 
+@@ -53,16 +54,20 @@ using Clock = std::chrono::steady_clock;
+ 
+ // the settings as Update latched them, the render thread's
+ struct Latched {
+-    bool replacing = false;
++    bool replacing = false;  // the player's pack (custom_textures) or a built-in one is on
+     bool dumping = false;
+     uint32_t format = 0;
++    bool custom = false;     // custom_textures: textures/replacement
++    bool upscale = false;    // ui_upscale: sharper copies of the textures drawn in screen space
++    std::string packs;       // texture_packs: built-in packs under textures/packs, comma separated
+     bool operator==(const Latched&) const = default;
+ };
+ 
+ struct Pack {
+     Latched set;
+     uint32_t generation = 1;
+-    fs::path pack_dir;
++    fs::path pack_dir;                             // textures/replacement, the player's
++    std::vector<fs::path> builtin;                 // textures/packs/<name> for each name in texture_packs
+     fs::path dump_dir;
+     std::unordered_map<uint64_t, fs::path> files;  // by the key in their names; written by Update alone
+     HANDLE watch = INVALID_HANDLE_VALUE;           // changes under pack_dir
+@@ -74,6 +79,7 @@ struct Pack {
+     std::condition_variable wake;
+     std::deque<std::function<void()>> jobs;
+     std::unordered_set<uint64_t> asked;
++    std::unordered_set<uint64_t> generated;  // keys whose sharper 2D copy is made or being made (ui_upscale)
+     std::unordered_map<uint64_t, std::optional<Image>> loaded;  // empty: the file did not load
+     std::unordered_set<uint64_t> dumped;
+ };
+@@ -173,17 +179,24 @@ std::string Utf8(const fs::path& p) {
+     return std::string(s.begin(), s.end());
+ }
+ 
+-void ListPack(const fs::path& dir) {
+-    g.files.clear();
++void ListDir(const fs::path& dir) {
++    size_t before = g.files.size();
+     std::error_code ec;
+     fs::recursive_directory_iterator it(dir, ec);
+     for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+         const fs::path& p = it->path();
+         bool image = _wcsicmp(p.extension().c_str(), L".dds") == 0 || _wcsicmp(p.extension().c_str(), L".png") == 0;
+         uint64_t key = image ? KeyInName(p.stem().wstring()) : 0;
+-        if (key) g.files.emplace(key, p);
++        if (key) g.files.emplace(key, p);  // the first listed wins
+     }
+-    LOGR("texture pack: %zu images in %s", g.files.size(), Utf8(dir).c_str());
++    LOGR("texture pack: %zu images in %s", g.files.size() - before, Utf8(dir).c_str());
++}
++
++// the player's pack first, so its images win over a built-in pack's for the same texture
++void ListPack() {
++    g.files.clear();
++    if (g.set.custom) ListDir(g.pack_dir);
++    for (const fs::path& dir : g.builtin) ListDir(dir);
+ }
+ 
+ // DDS files
+@@ -491,11 +504,22 @@ Image Decode(const TextureDesc& d, const uint8_t* guest, const uint32_t* palette
+ // the settings into g.set; false when none changed
+ bool LatchSettings() {
+     const app::Settings& s = app::Get();
+-    Latched now{s.custom_textures, s.dump_textures, s.texture_dump_format};
++    Latched now{s.custom_textures || !s.texture_packs.empty(), s.dump_textures, s.texture_dump_format,
++                s.custom_textures, s.ui_upscale, s.texture_packs};
+     if (now == g.set) return false;
+     g.set = now;
+     fs::path root = app::ExeDir() / "textures";
+     g.pack_dir = root / "replacement";
++    g.builtin.clear();
++    for (size_t at = 0; at <= now.packs.size();) {
++        size_t end = std::min(now.packs.find(',', at), now.packs.size());
++        std::string name = now.packs.substr(at, end - at);
++        name.erase(0, name.find_first_not_of(' '));
++        name.erase(name.find_last_not_of(' ') + 1);
++        if (!name.empty() && name.find_first_of("\\/:.") == std::string::npos) g.builtin.push_back(root / "packs" / name);
++        at = end + 1;
++    }
++    g.changed = Clock::time_point{};  // listed again at the next update, with or without the folder watch
+     if (now.dumping) {
+         g.dump_dir = root / "dumps";
+         std::error_code ec;
+@@ -532,10 +556,11 @@ bool UpdatePackFiles() {
+     NoteFolderChange(now);
+     if (!g.changed || now - *g.changed < kSettle) return false;
+     g.changed.reset();
+-    ListPack(g.pack_dir);
++    ListPack();
+     std::lock_guard l(g.lock);
+     g.revision++;
+     g.asked.clear();
++    g.generated.clear();
+     g.loaded.clear();
+     return true;
+ }
+@@ -553,8 +578,34 @@ uint32_t Generation() { return g.generation; }
+ 
+ bool Replacing() { return g.set.replacing && !g.files.empty(); }
+ 
++bool Upscaling() { return g.set.upscale; }
++
++bool Upscale(uint64_t key, const TextureDesc& d, const uint8_t* guest, const uint32_t* palette) {
++    if (!g.set.upscale || !key) return false;
++    if (g.set.replacing && g.files.count(key)) return false;  // a pack image wins
++    uint32_t revision = 0;
++    {
++        std::lock_guard l(g.lock);
++        if (!g.generated.insert(key).second) return true;
++        revision = g.revision;
++    }
++    Post([key, revision, img = Decode(d, guest, palette)] {
++        Image up;
++        bool ok = ui_upscale::Make(img, up);
++        if (ok) AddMipmaps(up);
++        std::lock_guard l(g.lock);
++        if (revision != g.revision) return;
++        if (ok) {
++            g.loaded[key] = std::move(up);
++        } else {
++            g.loaded[key] = std::nullopt;
++        }
++    });
++    return true;
++}
++
+ uint64_t Key(const TextureDesc& d, const FormatInfo& fi, const uint8_t* guest, const uint32_t* palette) {
+-    if (!Replacing() && !g.set.dumping) return 0;
++    if (!Replacing() && !g.set.dumping && !g.set.upscale) return 0;
+     // cube maps, volumes and depth stay the console's; linear ones are movie frames and the game's own copies
+     if (d.cube || d.depth > 1 || d.linear || UploadFormat(fi.host) == DXGI_FORMAT_UNKNOWN) return 0;
+     uint32_t shape[] = {d.format, d.width, d.height};
+@@ -582,7 +633,17 @@ void Dump(uint64_t key, const TextureDesc& d, const uint8_t* guest, const uint32
+ 
+ Lookup Take(uint64_t key, Image& out) {
+     auto file = g.files.find(key);
+-    if (!g.set.replacing || file == g.files.end()) return Lookup::None;
++    if (!g.set.replacing || file == g.files.end()) {
++        // a sharper 2D copy made here instead (Upscale)
++        std::lock_guard l(g.lock);
++        if (!g.generated.count(key)) return Lookup::None;
++        auto it = g.loaded.find(key);
++        if (it == g.loaded.end()) return Lookup::Loading;
++        if (!it->second) return Lookup::None;
++        out = std::move(*it->second);
++        g.loaded.erase(it);
++        return Lookup::Ready;
++    }
+     uint32_t revision = 0;
+     {
+         std::lock_guard l(g.lock);
+diff --git a/runtime/gpu/texturedumper.h b/runtime/gpu/texturedumper.h
+index b0facfb..a0ab202 100644
+--- a/runtime/gpu/texturedumper.h
++++ b/runtime/gpu/texturedumper.h
+@@ -35,6 +35,12 @@ uint32_t Generation();
+ // replacement on and the pack holds images
+ bool Replacing();
+ 
++// ui_upscale is on: textures drawn in screen space get sharper copies (ui_upscale.h)
++bool Upscaling();
++// starts making the sharper copy of a texture drawn in screen space, which Take then hands out under its key;
++// false when none is made (setting off, or a pack image for the key)
++bool Upscale(uint64_t key, const TextureDesc& d, const uint8_t* guest, const uint32_t* palette);
++
+ // the name of a texture's bytes, a P8 texture's with its 256 colours; 0 when neither the pack nor dumping applies
+ uint64_t Key(const TextureDesc& d, const FormatInfo& fi, const uint8_t* guest, const uint32_t* palette);
+ 
+diff --git a/runtime/gpu/ui_upscale.cpp b/runtime/gpu/ui_upscale.cpp
+new file mode 100644
+index 0000000..3e0632f
+--- /dev/null
++++ b/runtime/gpu/ui_upscale.cpp
+@@ -0,0 +1,205 @@
++#include "gpu/ui_upscale.h"
++
++#include <algorithm>
++#include <cmath>
++#include <cstring>
++
++namespace gpu::ui_upscale {
++
++namespace {
++
++constexpr uint32_t kMaxSide = 2048;  // the upscaled texture's longest side
++constexpr uint32_t kMaxFactor = 4;
++
++// ---- BC1 BC2 BC3 into BGRA
++
++void Colour565(uint16_t c, uint8_t out[3]) {  // B G R
++    out[2] = uint8_t(((c >> 11) & 31) * 255 / 31);
++    out[1] = uint8_t(((c >> 5) & 63) * 255 / 63);
++    out[0] = uint8_t((c & 31) * 255 / 31);
++}
++
++// a 4x4 block's colours (BC1 with its 3-colour mode when alone) into px, 16 BGRA
++void ColourBlock(const uint8_t* b, bool bc1, uint8_t px[64]) {
++    uint16_t c0 = uint16_t(b[0] | b[1] << 8), c1 = uint16_t(b[2] | b[3] << 8);
++    uint8_t pal[4][4] = {};
++    Colour565(c0, pal[0]);
++    Colour565(c1, pal[1]);
++    for (int i = 0; i < 4; i++) pal[i][3] = 255;
++    if (c0 > c1 || !bc1) {
++        for (int k = 0; k < 3; k++) {
++            pal[2][k] = uint8_t((2 * pal[0][k] + pal[1][k]) / 3);
++            pal[3][k] = uint8_t((pal[0][k] + 2 * pal[1][k]) / 3);
++        }
++    } else {
++        for (int k = 0; k < 3; k++) pal[2][k] = uint8_t((pal[0][k] + pal[1][k]) / 2);
++        pal[3][3] = 0;
++    }
++    uint32_t bits = uint32_t(b[4] | b[5] << 8 | b[6] << 16 | uint32_t(b[7]) << 24);
++    for (int i = 0; i < 16; i++) std::memcpy(px + i * 4, pal[(bits >> (i * 2)) & 3], 4);
++}
++
++void AlphaBc3(const uint8_t* b, uint8_t px[64]) {
++    uint8_t a[8] = {b[0], b[1]};
++    if (a[0] > a[1]) {
++        for (int i = 1; i < 7; i++) a[i + 1] = uint8_t(((7 - i) * a[0] + i * a[1]) / 7);
++    } else {
++        for (int i = 1; i < 5; i++) a[i + 1] = uint8_t(((5 - i) * a[0] + i * a[1]) / 5);
++        a[6] = 0;
++        a[7] = 255;
++    }
++    uint64_t bits = 0;
++    for (int i = 0; i < 6; i++) bits |= uint64_t(b[2 + i]) << (8 * i);
++    for (int i = 0; i < 16; i++) px[i * 4 + 3] = a[(bits >> (3 * i)) & 7];
++}
++
++void AlphaBc2(const uint8_t* b, uint8_t px[64]) {
++    for (int i = 0; i < 16; i++) {
++        uint8_t nib = uint8_t((b[i / 2] >> ((i & 1) * 4)) & 15);
++        px[i * 4 + 3] = uint8_t(nib * 17);
++    }
++}
++
++bool ToBgra(const texturedumper::Image& in, std::vector<uint8_t>& out) {
++    const texturedumper::Level& l = in.levels[0];
++    uint32_t w = in.width, h = in.height;
++    out.assign(size_t(w) * h * 4, 0);
++    if (in.format == DXGI_FORMAT_B8G8R8A8_UNORM) {
++        for (uint32_t y = 0; y < h; y++) std::memcpy(&out[size_t(y) * w * 4], &l.px[size_t(y) * l.pitch], size_t(w) * 4);
++        return true;
++    }
++    bool bc1 = in.format == DXGI_FORMAT_BC1_UNORM, bc2 = in.format == DXGI_FORMAT_BC2_UNORM;
++    if (!bc1 && !bc2 && in.format != DXGI_FORMAT_BC3_UNORM) return false;
++    uint32_t block = bc1 ? 8 : 16;
++    for (uint32_t by = 0; by < (h + 3) / 4; by++)
++        for (uint32_t bx = 0; bx < (w + 3) / 4; bx++) {
++            const uint8_t* b = &l.px[size_t(by) * l.pitch + size_t(bx) * block];
++            uint8_t px[64];
++            ColourBlock(bc1 ? b : b + 8, bc1, px);
++            if (bc2) AlphaBc2(b, px);
++            if (!bc1 && !bc2) AlphaBc3(b, px);
++            for (uint32_t i = 0; i < 16; i++) {
++                uint32_t x = bx * 4 + i % 4, y = by * 4 + i / 4;
++                if (x < w && y < h) std::memcpy(&out[(size_t(y) * w + x) * 4], px + i * 4, 4);
++            }
++        }
++    return true;
++}
++
++// ---- Catmull-Rom
++
++float Weight(float t) {
++    t = std::fabs(t);
++    if (t < 1) return 1.5f * t * t * t - 2.5f * t * t + 1;
++    if (t < 2) return -0.5f * t * t * t + 2.5f * t * t - 4 * t + 2;
++    return 0;
++}
++
++// a mask: most texels fully clear or fully solid, some of each, and few in between (font glyphs, icon cut-outs; not
++// a soft glow, whose alpha fades over many texels)
++bool IsMask(const std::vector<uint8_t>& px) {
++    size_t n = px.size() / 4, clear = 0, solid = 0;
++    for (size_t i = 0; i < n; i++) {
++        uint8_t a = px[i * 4 + 3];
++        clear += a < 16;
++        solid += a > 239;
++    }
++    size_t between = n - clear - solid;
++    return clear > n / 20 && solid > n / 100 && clear + solid > n * 8 / 10 && between * 2 < solid;
++}
++
++}  // namespace
++
++bool Make(const texturedumper::Image& in, texturedumper::Image& out) {
++    if (in.levels.empty() || !in.width || !in.height) return false;
++    uint32_t side = std::max(in.width, in.height);
++    uint32_t f = std::min(kMaxFactor, kMaxSide / side);
++    if (f < 2) return false;
++    std::vector<uint8_t> src;
++    if (!ToBgra(in, src)) return false;
++    bool mask = IsMask(src);
++    uint32_t sw = in.width, sh = in.height, w = sw * f, h = sh * f;
++
++    // separable: rows into a float buffer. Colour is not premultiplied by alpha: additive effects draw colour where
++    // alpha is 0, and would lose it
++    std::vector<float> pre(size_t(sw) * sh * 4);
++    for (size_t i = 0; i < size_t(sw) * sh * 4; i++) pre[i] = src[i] / 255.0f;
++    auto taps = [](uint32_t n, uint32_t f, uint32_t o, int idx[4], float wt[4]) {
++        float s = (o + 0.5f) / f - 0.5f;
++        int base = int(std::floor(s));
++        float sum = 0;
++        for (int t = 0; t < 4; t++) {
++            idx[t] = std::clamp(base - 1 + t, 0, int(n) - 1);
++            wt[t] = Weight(s - float(base - 1 + t));
++            sum += wt[t];
++        }
++        for (int t = 0; t < 4; t++) wt[t] /= sum;
++    };
++    std::vector<float> rows(size_t(w) * sh * 4);
++    for (uint32_t x = 0; x < w; x++) {
++        int idx[4];
++        float wt[4];
++        taps(sw, f, x, idx, wt);
++        for (uint32_t y = 0; y < sh; y++)
++            for (int k = 0; k < 4; k++) {
++                float v = 0;
++                for (int t = 0; t < 4; t++) v += wt[t] * pre[(size_t(y) * sw + idx[t]) * 4 + k];
++                rows[(size_t(y) * w + x) * 4 + k] = v;
++            }
++    }
++    out = {};
++    out.format = DXGI_FORMAT_B8G8R8A8_UNORM;
++    out.width = w;
++    out.height = h;
++    out.levels.resize(1);
++    out.levels[0].pitch = w * 4;
++    out.levels[0].px.resize(size_t(w) * h * 4);
++    uint8_t* dst = out.levels[0].px.data();
++    std::vector<float> alpha(size_t(w) * h);
++    for (uint32_t y = 0; y < h; y++) {
++        int idx[4];
++        float wt[4];
++        taps(sh, f, y, idx, wt);
++        for (uint32_t x = 0; x < w; x++) {
++            float v[4] = {};
++            for (int t = 0; t < 4; t++)
++                for (int k = 0; k < 4; k++) v[k] += wt[t] * rows[(size_t(idx[t]) * w + x) * 4 + k];
++            float a = std::clamp(v[3], 0.0f, 1.0f);
++            alpha[size_t(y) * w + x] = a;
++            uint8_t* p = dst + (size_t(y) * w + x) * 4;
++            for (int k = 0; k < 3; k++) p[k] = uint8_t(std::clamp(v[k], 0.0f, 1.0f) * 255 + 0.5f);
++        }
++    }
++    // A mask's edge follows the console texels' stair steps. Blurred over about one source texel those steps become
++    // a straight slope, and tightened around half coverage the slope is a crisp, smooth outline (much as a distance
++    // field draws text). Two box passes each way are close to a Gaussian.
++    if (mask) {
++        int r = int(f * 3 / 4);
++        std::vector<float> tmp(alpha.size());
++        auto box = [&](std::vector<float>& from, std::vector<float>& to, bool across) {
++            uint32_t n = across ? w : h, lines = across ? h : w;
++            for (uint32_t line = 0; line < lines; line++) {
++                auto at = [&](int i) -> float& {
++                    int c = std::clamp(i, 0, int(n) - 1);
++                    return across ? from[size_t(line) * w + c] : from[size_t(c) * w + line];
++                };
++                float sum = 0;
++                for (int i = -r; i <= r; i++) sum += at(i);
++                for (uint32_t i = 0; i < n; i++) {
++                    (across ? to[size_t(line) * w + i] : to[size_t(i) * w + line]) = sum / float(2 * r + 1);
++                    sum += at(int(i) + r + 1) - at(int(i) - r);
++                }
++            }
++        };
++        for (int pass = 0; pass < 2; pass++) {
++            box(alpha, tmp, true);
++            box(tmp, alpha, false);
++        }
++        float tighten = float(f) / 1.2f;
++        for (float& a : alpha) a = std::clamp((a - 0.5f) * tighten + 0.5f, 0.0f, 1.0f);
++    }
++    for (size_t i = 0; i < alpha.size(); i++) dst[i * 4 + 3] = uint8_t(alpha[i] * 255 + 0.5f);
++    return true;
++}
++
++}  // namespace gpu::ui_upscale
+diff --git a/runtime/gpu/ui_upscale.h b/runtime/gpu/ui_upscale.h
+new file mode 100644
+index 0000000..fd6c418
+--- /dev/null
++++ b/runtime/gpu/ui_upscale.h
+@@ -0,0 +1,15 @@
++#pragma once
++#include "gpu/texturedumper.h"
++
++// Sharper 2D: the textures the game draws in screen space (its fonts, menus, HUD and button icons) are made at up to
++// 4 times their size when first drawn, so they stay smooth at high resolutions. Colour is upscaled with a
++// Catmull-Rom filter; a texture whose alpha is a mask (mostly fully clear or fully solid, as font glyphs are) also
++// gets its edges tightened, so the upscaled glyphs have crisp, smooth outlines instead of the console's blocky ones.
++// Made on the player's machine from their own copy of the game; nothing of the game is shipped.
++namespace gpu::ui_upscale {
++
++// level 0 of in (B8G8R8A8 or BC1/BC2/BC3) into out as B8G8R8A8 with mipmaps; false when the texture is left as it
++// is (too large already, or a format this does not read)
++bool Make(const texturedumper::Image& in, texturedumper::Image& out);
++
++}  // namespace gpu::ui_upscale
+diff --git a/runtime/kernel/files.cpp b/runtime/kernel/files.cpp
+index f44b26d..173f41b 100644
+--- a/runtime/kernel/files.cpp
++++ b/runtime/kernel/files.cpp
+@@ -577,10 +577,23 @@ KERNEL_EXPORT(226, NtSetInformationFile, 5) {
+             std::string target = ReadAnsiString(in + 8);
+             std::string host = ResolvePath(target, root);
+             if (host.empty()) return kObjectPathNotFound;
+-            if (f->fp) std::fflush(f->fp);
++            // Windows does not rename a file the CRT holds open (no FILE_SHARE_DELETE): closed around the rename and
++            // opened again at the new name. The game copies music into the Z: cache as name.wma_ and renames it
++            // through the handle; without this every copy stayed .wma_ and the track never played.
++            std::lock_guard<std::mutex> lock(f->io);
++            bool was_open = f->fp != nullptr;
++            if (was_open) {
++                std::fclose(f->fp);
++                f->fp = nullptr;
++            }
+             fs::rename(f->host, host, ec);
++            if (ec) LOGW("NtSetInformationFile: rename %s -> %s: %s", f->host.string().c_str(), host.c_str(), ec.message().c_str());
++            else f->host = host;
++            if (was_open) {
++                f->fp = std::fopen(f->host.string().c_str(), "r+b");
++                if (!f->fp) f->fp = std::fopen(f->host.string().c_str(), "rb");
++            }
+             if (ec) return kAccessDenied;
+-            f->host = host;
+             break;
+         }
+         case 4:  // basic, times and attributes are not kept
+diff --git a/runtime/kernel/kernel.h b/runtime/kernel/kernel.h
+index 163ea09..95751a7 100644
+--- a/runtime/kernel/kernel.h
++++ b/runtime/kernel/kernel.h
+@@ -154,6 +154,8 @@ struct Thread : Object {
+     uint32_t kpcr = 0, ethread = 0, stack_top = 0, stack_size = 0, tls = 0;
+     uint32_t exit_code = 0;
+     int priority = 0;
++    int host_priority = 0;  // the Windows priority the guest's asks for (THREAD_PRIORITY_*), see SetGuestPriority
++    void* host = nullptr;   // its Windows thread, once it runs
+     std::atomic<int> suspend{0};
+     std::mutex apc_lock;
+     std::deque<std::array<uint32_t, 4>> apcs;  // routine, arg1, arg2, arg3
+@@ -166,6 +168,10 @@ using ThreadRef = std::shared_ptr<Thread>;
+ Thread* Current();
+ ThreadRef CurrentRef();
+ void StartHostThread(const char* name, std::function<void(X86Context&)> fn);
++// a guest thread's priority on its Windows thread: base is KeSetBasePriorityThread's increment (THREAD_PRIORITY_*,
++// 15 and -15 saturate), else KeSetPriorityThread's absolute 0..31 (8 normal, 16 and up real time). On one core
++// (g_guest_affinity) the Xbox scheduler's order matters: a high priority thread must run as soon as it is ready.
++void SetGuestPriority(Thread& t, int priority, bool base);
+ void RunDpcs(X86Context& ctx);
+ void InitKernelData();
+ void LogGuestStack(X86Context& ctx, int words);
+@@ -211,6 +217,11 @@ const std::string& KeptPicture();
+ // event and the old instance, waiting in Relaunch with its window still up, exits.
+ std::wstring HandoverEvent(unsigned long process);
+ inline std::atomic<bool> g_relaunching{false};
++// Host CPU mask for the threads that run guest code, 0 leaves them unpinned. The Xbox has one CPU: titles whose
++// own locks and flags are plain read-modify-writes (fine when threads only interleave) race once those threads
++// run in parallel. A game sets this from GameInfo::init, before boot, to run them all on one core as the console
++// did.
++inline std::atomic<uint64_t> g_guest_affinity{0};
+ 
+ using KernelFn = void (*)(X86Context& ctx, uint8_t* base);
+ void RegisterExport(uint32_t ordinal, const char* name, KernelFn fn);
+diff --git a/runtime/kernel/threads.cpp b/runtime/kernel/threads.cpp
+index a8acfd6..8d9b893 100644
+--- a/runtime/kernel/threads.cpp
++++ b/runtime/kernel/threads.cpp
+@@ -101,6 +101,7 @@ void Spawn(std::function<void()> fn) {
+ #ifdef _WIN32
+     auto entry = [](void* p) -> DWORD {
+         std::unique_ptr<std::function<void()>> g(static_cast<std::function<void()>*>(p));
++        if (uint64_t mask = g_guest_affinity.load()) ::SetThreadAffinityMask(::GetCurrentThread(), DWORD_PTR(mask));
+         (*g)();
+         return 0;
+     };
+@@ -150,10 +151,40 @@ ThreadRef CreateThread(uint32_t stack_size, uint32_t tls_size, uint32_t system_r
+     return t;
+ }
+ 
++namespace {
++int HostPriority(int priority, bool base) {
++    if (base) {
++        if (priority >= 15) return THREAD_PRIORITY_TIME_CRITICAL;
++        if (priority <= -15) return THREAD_PRIORITY_IDLE;
++        return std::clamp(priority, -2, 2);
++    }
++    if (priority >= 16) return THREAD_PRIORITY_TIME_CRITICAL;
++    if (priority <= 1) return THREAD_PRIORITY_IDLE;
++    return std::clamp(priority - 8, -2, 2);
++}
++
++// the calling thread's own handle, usable from other threads
++void* OwnHandle() {
++    HANDLE h = nullptr;
++    ::DuplicateHandle(::GetCurrentProcess(), ::GetCurrentThread(), ::GetCurrentProcess(), &h, 0, FALSE,
++                      DUPLICATE_SAME_ACCESS);
++    return h;
++}
++}  // namespace
++
++void SetGuestPriority(Thread& t, int priority, bool base) {
++    t.priority = priority;
++    t.host_priority = HostPriority(priority, base);
++    LOGI("thread %X priority %d%s -> %d", t.id, priority, base ? " (base)" : "", t.host_priority);
++    if (t.host) ::SetThreadPriority(static_cast<HANDLE>(t.host), t.host_priority);
++}
++
+ void StartThread(ThreadRef t) {
+     Register(t);
+     Spawn([t] {
+         t_current = t;
++        t->host = OwnHandle();
++        if (t->host_priority) ::SetThreadPriority(::GetCurrentThread(), t->host_priority);
+         char name[32];
+         std::snprintf(name, sizeof(name), "guest %X", t->id);
+         NameHostThread(name);
+@@ -191,6 +222,9 @@ void StartHostThread(const char* name, std::function<void(X86Context&)> fn) {
+     std::string n = name;
+     Spawn([t, fn, n] {
+         t_current = t;
++        // the runtime's stand-ins for interrupts and DPCs (vertical blank, timers, sound callbacks) run ahead of
++        // every guest thread, as on the Xbox: on one core they would otherwise wait for a busy game thread's time slice
++        ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+         NameHostThread(n.c_str());
+         X86Context ctx;
+         InitContext(*t, ctx);
+diff --git a/runtime/kernel/xboxkrnl.cpp b/runtime/kernel/xboxkrnl.cpp
+index 3b24d51..a5ac987 100644
+--- a/runtime/kernel/xboxkrnl.cpp
++++ b/runtime/kernel/xboxkrnl.cpp
+@@ -1,3 +1,4 @@
++#include <map>
+ #include <algorithm>
+ #include <cctype>
+ #include <chrono>
+@@ -261,6 +262,13 @@ KERNEL_EXPORT(99, KeDelayExecutionThread, 3) {
+     Thread* t = Current();
+     if (alertable && t && RunApcs(*t)) return kUserApc;
+     int64_t deadline = ToDeadline(interval);
++    if (std::getenv("XBE_TRACE_DELAY")) {
++        static std::atomic<int> logged{0};
++        if (interval == -150000 && logged++ < 4) {
++            LOGR("delay %lld thread %X", (long long)interval, t ? t->id : 0);
++            LogGuestStack(ctx, 48);
++        }
++    }
+     auto now = [] {
+         return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+     };
+@@ -634,19 +642,43 @@ KERNEL_EXPORT(230, NtSignalAndWaitForSingleObjectEx, 5) {
+     return Wait({w}, false, TimeoutArg(a[4]), a[3] & 0xFF);
+ }
+ 
++// XBE_TRACE_WAIT: each thread's first wait from each place, with its guest stack, and every 5 s the counts
++static void TraceWait(X86Context& ctx, const char* what, int64_t timeout) {
++    static const bool on = std::getenv("XBE_TRACE_WAIT") != nullptr;
++    if (!on) return;
++    static std::mutex m;
++    static std::map<std::pair<uint32_t, uint32_t>, uint64_t> seen;
++    static auto last = std::chrono::steady_clock::now();
++    Thread* t = Current();
++    uint32_t id = t ? t->id : 0, from = R32(ctx.esp + 0x20);
++    std::lock_guard<std::mutex> lock(m);
++    if (seen[{id, from}]++ == 0) {
++        LOGR("wait: %s thread %X from %08X timeout %lld", what, id, from, (long long)timeout);
++        LogGuestStack(ctx, 40);
++    }
++    if (std::chrono::steady_clock::now() - last > std::chrono::seconds(5)) {
++        last = std::chrono::steady_clock::now();
++        for (auto& [k, n] : seen) LOGR("wait: thread %X from %08X x%llu", k.first, k.second, (unsigned long long)n);
++        for (auto& [k, n] : seen) n = 1;
++    }
++}
++
+ KERNEL_EXPORT(233, NtWaitForSingleObject, 3) {
++    TraceWait(ctx, "NtWaitForSingleObject", a[2] ? int64_t(R64(a[2])) : -1);
+     ObjectRef o = FromHandle(a[0]);
+     if (!o) return kInvalidHandle;
+     return Wait({o}, false, TimeoutArg(a[2]), a[1] & 0xFF);
+ }
+ 
+ KERNEL_EXPORT(234, NtWaitForSingleObjectEx, 4) {
++    TraceWait(ctx, "NtWaitForSingleObjectEx", a[3] ? int64_t(R64(a[3])) : -1);
+     ObjectRef o = FromHandle(a[0]);
+     if (!o) return kInvalidHandle;
+     return Wait({o}, false, TimeoutArg(a[3]), a[2] & 0xFF);
+ }
+ 
+ KERNEL_EXPORT(235, NtWaitForMultipleObjectsEx, 6) {
++    TraceWait(ctx, "NtWaitForMultipleObjectsEx", a[5] ? int64_t(R64(a[5])) : -1);
+     std::vector<ObjectRef> objs;
+     for (uint32_t i = 0; i < a[0]; i++) {
+         ObjectRef o = FromHandle(R32(a[1] + i * 4));
+@@ -657,11 +689,13 @@ KERNEL_EXPORT(235, NtWaitForMultipleObjectsEx, 6) {
+ }
+ 
+ KERNEL_EXPORT(159, KeWaitForSingleObject, 5) {
++    TraceWait(ctx, "KeWaitForSingleObject", a[4] ? int64_t(R64(a[4])) : -1);
+     ObjectRef o = FromPointer(a[0]);
+     return Wait({o}, false, TimeoutArg(a[4]), a[3] & 0xFF);
+ }
+ 
+ KERNEL_EXPORT(158, KeWaitForMultipleObjects, 8) {
++    TraceWait(ctx, "KeWaitForMultipleObjects", a[6] ? int64_t(R64(a[6])) : -1);
+     std::vector<ObjectRef> objs;
+     for (uint32_t i = 0; i < a[0]; i++) objs.push_back(FromPointer(R32(a[1] + i * 4)));
+     return Wait(objs, a[2] == 0, TimeoutArg(a[6]), a[5] & 0xFF);
+@@ -867,7 +901,7 @@ KERNEL_EXPORT(148, KeSetPriorityThread, 2) {
+     Thread* t = ThreadAt(a[0]);
+     if (!t) return 0;
+     int old = t->priority;
+-    t->priority = int32_t(a[1]);
++    SetGuestPriority(*t, int32_t(a[1]), false);
+     return uint32_t(old);
+ }
+ KERNEL_EXPORT(124, KeQueryBasePriorityThread, 1) {
+@@ -881,7 +915,7 @@ KERNEL_EXPORT(143, KeSetBasePriorityThread, 2) {
+     if (!o || o->type != ObjType::Thread) return 0;
+     auto& t = static_cast<Thread&>(*o);
+     int old = t.priority;
+-    t.priority = int32_t(a[1]);
++    SetGuestPriority(t, int32_t(a[1]), true);
+     return uint32_t(old);
+ }
+ 
+diff --git a/runtime/xdk/d3d8.cpp b/runtime/xdk/d3d8.cpp
+index a6e65d6..dc06dee 100644
+--- a/runtime/xdk/d3d8.cpp
++++ b/runtime/xdk/d3d8.cpp
+@@ -961,6 +961,15 @@ HLE_STDCALL(D3DDevice_GetVertexShaderFunction, 3) {
+ HLE_STDCALL(D3DDevice_SetVertexShader, 1) {
+     std::lock_guard<std::recursive_mutex> lock(g_lock);
+     uint32_t h = a[0];
++    {
++        // XBE_TRACE_VS=<hex handle>: log who sets that vertex shader, the first 40 times
++        static const uint32_t trace = [] {
++            const char* v = std::getenv("XBE_TRACE_VS");
++            return v ? uint32_t(std::strtoul(v, nullptr, 16)) : 0u;
++        }();
++        static int traced = 0;
++        if (trace && h == trace && traced++ < 40) LOGR("trace: SetVertexShader %X from %08X", h, R32(ctx.esp));
++    }
+     g_state.vs_handle = h;
+     g_state.vs = nullptr;
+     if (h & 1) {
+@@ -1209,19 +1218,75 @@ HLE_STDCALL(D3DDevice_SetPixelShaderConstant, 3) {
+ 
+ // drawing
+ 
++// XBE_TRACE_ORIGIN=<hex vertex shader>: which draw path issues triangle lists with that shader (the immediate one sets
++// the low bit), with the guest stack, 4 times per path. Debugging aid.
++void TraceOrigin(const char* path, uint32_t prim, uint32_t count, uint32_t src = 0) {
++    // "q<count>": quad lists of that many vertices whatever the shader
++    static const char* env = std::getenv("XBE_TRACE_ORIGIN");
++    static const bool by_count = env && env[0] == 'q';
++    static const uint32_t want = env ? uint32_t(std::strtoul(env + (by_count ? 1 : 0), nullptr, by_count ? 10 : 16)) : 0u;
++    static std::map<std::string, int> seen;
++    // "cap": every draw from a capture request (F3, autopilot capture) for the next 3000, numbered
++    static const bool cap = env && std::string(env) == "cap";
++    static int cap_left = 0, cap_n = 0;
++    if (cap) {
++        if (gpu::g_capture && !cap_left) cap_left = 3000, cap_n = 0;
++        if (!cap_left) return;
++        cap_left--;
++        uint32_t vb = g_state.streams[0].vb;
++        LOGR("origin %04d: %s prim %u count %u vs %X stream0 %08X data %08X stride %u src %08X", cap_n++, path, prim,
++             count, g_state.vs_handle, vb, vb ? R32(vb + 4) : 0, g_state.streams[0].stride, src);
++        return;
++    }
++    if (!want) return;
++    if (by_count ? (prim != 8 || count != want) : ((g_state.vs_handle & ~1u) != want || (prim != 5 && prim != 8))) return;
++    if (seen[path]++ >= 4) return;
++    LOGR("origin: %s prim %u count %u vs %X", path, prim, count, g_state.vs_handle);
++    if (kernel::Current()) kernel::LogGuestStack(kernel::CurrentContext(), 128);
++}
++
++void TraceDraw(X86Context& ctx, const char* what, uint32_t vertices, uint32_t stride, uint32_t prim = 0, uint32_t count = 0);
++
+ HLE_STDCALL(D3DDevice_DrawVertices, 3) {
+     std::lock_guard<std::recursive_mutex> lock(g_lock);
++    if (uint32_t vb = g_state.streams[0].vb)
++        TraceDraw(ctx, "DrawVertices", mem::VirtualFromPhysical(R32(vb + 4)), g_state.streams[0].stride, a[0], a[2]);
+     Walk(Dev(kDevPush));  // a visibility test begun since the last draw counts this one
+     SyncDeferred();
++    TraceOrigin("DrawVertices", a[0], a[2]);
+     if (g_backend) g_backend->Draw(g_state, a[0], a[1], a[2], nullptr);
+     return 0;
+ }
+ 
++// XBE_TRACE_UP=<hex vertex shader>: for draws with that shader, log the vertex pointer, the bytes around it and the
++// guest stack, twice per kind of draw and call site. Debugging aid.
++void TraceDraw(X86Context& ctx, const char* what, uint32_t vertices, uint32_t stride, uint32_t prim, uint32_t count) {
++    // "all": every shader
++    static const char* env = std::getenv("XBE_TRACE_UP");
++    static const bool all = env && std::string(env) == "all";
++    static const uint32_t trace = env && !all ? uint32_t(std::strtoul(env, nullptr, 16)) : 0u;
++    static std::map<std::pair<std::string, uint32_t>, int> seen;  // twice per kind of draw and call site
++    if (!env || (!all && g_state.vs_handle != trace) || seen[{what, R32(ctx.esp)}]++ >= 2) return;
++    LOGR("trace: %s prim %u count %u vs %X vertices %08X stride %u from %08X", what, prim, count, g_state.vs_handle,
++         vertices, stride, R32(ctx.esp));
++    if (all) return;
++    for (int row = -2; row < 6 && vertices; row++) {
++        uint32_t p = vertices + row * 8;
++        float f[2];
++        std::memcpy(f, HostPtr(p), 8);
++        LOGR("trace:   %08X %+4d  %08X %08X  %g %g", p, row * 8, R32(p), R32(p + 4), f[0], f[1]);
++    }
++    kernel::LogGuestStack(ctx, 256);
++}
++
+ HLE_STDCALL(D3DDevice_DrawIndexedVertices, 3) {
+     std::lock_guard<std::recursive_mutex> lock(g_lock);
+     Walk(Dev(kDevPush));
+     SyncDeferred();
+     const uint8_t* indices = a[2] ? static_cast<const uint8_t*>(HostPtr(a[2])) : nullptr;
++    if (uint32_t vb = g_state.streams[0].vb)
++        TraceDraw(ctx, "DrawIndexedVertices", mem::VirtualFromPhysical(R32(vb + 4)), g_state.streams[0].stride, a[0], a[1]);
++    TraceOrigin("DrawIndexedVertices", a[0], a[1]);
+     if (g_backend) g_backend->Draw(g_state, a[0], 0, a[1], indices);
+     return 0;
+ }
+@@ -1260,9 +1325,19 @@ void DrawUp(uint32_t prim, uint32_t count, const void* vertices, uint32_t stride
+     // indexed: count is of indices, the ring takes the vertices up to the highest one
+     uint32_t used = indices ? *std::max_element(indices, indices + count) + 1u : count;
+     auto stream = g_state.streams[0];
++    // the indices of DrawIndexedVerticesUP count from the vertices given: SetIndices' base vertex is not added
++    uint32_t base_vertex = g_state.base_vertex;
++    g_state.base_vertex = 0;
+     g_state.streams[0] = {UpVertices(vertices, used * stride), stride};
++    {
++        // the title's vertices when they are guest memory (not the immediate mode's packed copy)
++        const uint8_t* v = static_cast<const uint8_t*>(vertices);
++        uint32_t src = v >= kernel::g_base && v < kernel::g_base + 0xFFFFFFFFull ? uint32_t(v - kernel::g_base) : 0;
++        TraceOrigin(indices ? "DrawUp indexed" : "DrawUp", prim, count, src);
++    }
+     g_backend->Draw(g_state, prim, 0, count, reinterpret_cast<const uint8_t*>(indices));
+     g_state.streams[0] = stream;
++    g_state.base_vertex = base_vertex;
+ }
+ 
+ // bytes per vertex of the bound format: stream 0 of the FVF or of the shader's declaration
+@@ -1425,6 +1500,7 @@ void Walk(uint32_t end) {
+ 
+ HLE_STDCALL(D3DDevice_DrawVerticesUP, 4) {
+     std::lock_guard<std::recursive_mutex> lock(g_lock);
++    TraceDraw(ctx, "DrawVerticesUP", a[2], a[3], a[0], a[1]);
+     Walk(Dev(kDevPush));
+     DrawUp(a[0], a[1], HostPtr(a[2]), a[3]);
+     return 0;
+@@ -1432,6 +1508,33 @@ HLE_STDCALL(D3DDevice_DrawVerticesUP, 4) {
+ // (prim, index count, 16 bit indices, vertices, stride)
+ HLE_STDCALL(D3DDevice_DrawIndexedVerticesUP, 5) {
+     std::lock_guard<std::recursive_mutex> lock(g_lock);
++    {
++        // XBE_TRACE_BATCH=<hex vertex address>: screen space batches drawn from there, with their indices and the
++        // referenced vertices whose rhw is not 1, 12 times. Debugging aid.
++        static const char* env = std::getenv("XBE_TRACE_BATCH");
++        static const uint32_t want = env ? uint32_t(std::strtoul(env, nullptr, 16)) : 0u;
++        static int left = 400;
++        if (want && a[3] == want && (g_state.vs_handle & 0xE) == 4 && left > 0) {
++            left--;
++            const uint16_t* ix = static_cast<const uint16_t*>(HostPtr(a[2]));
++            uint32_t lo = 0xFFFF, hi = 0;
++            std::string list;
++            for (uint32_t i = 0; i < a[1]; i++) {
++                lo = std::min<uint32_t>(lo, ix[i]);
++                hi = std::max<uint32_t>(hi, ix[i]);
++                if (i < 24) list += " " + std::to_string(ix[i]);
++            }
++            LOGR("batch: prim %u indices %u range %u..%u stride %u vs %X from %08X:%s", a[0], a[1], lo, hi, a[4],
++                 g_state.vs_handle, R32(ctx.esp), list.c_str());
++            for (uint32_t v = lo; v <= hi && v < lo + 48; v++) {
++                float f[6];
++                std::memcpy(f, HostPtr(a[3] + v * a[4]), std::min<uint32_t>(a[4], 24));
++                bool off = f[0] <= 0.5f || f[1] <= 0.5f || f[0] > 640 || f[1] > 480;
++                if (f[3] != 1.0f || off) LOGR("batch:   v%u bad: %g %g %g %g %g %g", v, f[0], f[1], f[2], f[3], f[4], f[5]);
++            }
++        }
++    }
++    TraceDraw(ctx, "DrawIndexedVerticesUP", a[3], a[4], a[0], a[1]);
+     Walk(Dev(kDevPush));
+     DrawUp(a[0], a[1], HostPtr(a[3]), a[4], static_cast<const uint16_t*>(HostPtr(a[2])));
+     return 0;
+diff --git a/runtime/xdk/dsound.cpp b/runtime/xdk/dsound.cpp
+index d48cc44..18e3d95 100644
+--- a/runtime/xdk/dsound.cpp
++++ b/runtime/xdk/dsound.cpp
+@@ -402,10 +402,18 @@ void ShareCentre(Place& at) {
+     at.front *= 1 - 0.5f * both * both;
+ }
+ 
+-// distance attenuation, 1.0 inside the min distance: min / distance, or the voice's rolloff curve
++// IDirectSound_SetRolloffFactor: the listener's scale of the distance rolloff, 1 by default, 0 turns it off (a title
++// that attenuates by volume itself)
++float g_rolloff = 1;
++
++// distance attenuation, 1.0 inside the min distance: DirectSound's min / (min + rolloff (distance - min)), or the
++// voice's rolloff curve
+ float Attenuation(const Voice& v, float dist) {
+     if (dist <= v.min_dist) return 1;
+-    if (v.curve.empty()) return v.min_dist / std::min(dist, v.max_dist);
++    if (v.curve.empty()) {
++        float d = std::min(dist, v.max_dist);
++        return v.min_dist / (v.min_dist + g_rolloff * (d - v.min_dist));
++    }
+     if (v.max_dist <= v.min_dist) return 1;
+     // points spread evenly from min to max distance, 1.0 at min
+     float at = (std::min(dist, v.max_dist) - v.min_dist) / (v.max_dist - v.min_dist) * v.curve.size();
+@@ -619,6 +627,38 @@ void MixVoice(Voice& v, float* bins, uint32_t frames) {
+     v.itd = itd;
+ }
+ 
++int64_t NowMs();
++
++// XBE_TRACE_DSOUND: every 2 s the voices that play, with their levels, place and loudest bin gain
++void TraceVoices() {
++    static const bool on = std::getenv("XBE_TRACE_DSOUND") != nullptr;
++    if (!on) return;
++    static int64_t next = 0;
++    int64_t now = NowMs();
++    if (now < next) return;
++    next = now + 2000;
++    int n = 0;
++    for (auto& [obj, v] : g_voices) {
++        bool live = !(v.paused || v.sync || (!v.stream && !v.playing));
++        if (!live) continue;
++        Place at = Locate(v);
++        Gains g = Levels(v, at);
++        float best = 0;
++        int best_bin = -1;
++        for (auto& row : g.bin)
++            for (int b = 0; b < int(kBins); b++)
++                if (row[b] > best) best = row[b], best_bin = b;
++        LOGR("dsound: %08X %s ch %u %u Hz tag %X vol %.3f head %.3f bins %u%s pos %.1f %.1f %.1f dist %.1f..%.1f att %.3f "
++             "-> bin %d gain %.4f%s",
++             obj, v.stream ? "stream" : "buffer", v.channels, v.freq ? v.freq : v.rate, v.tag, v.volume, v.headroom, v.nbins,
++             v.is3d ? " 3d" : "", v.p[0], v.p[1], v.p[2], v.min_dist, v.max_dist, at.att, best_bin, best,
++             v.stream ? (v.packets.empty() ? " no packets" : "") : "");
++        n++;
++    }
++    LOGR("dsound: %d voices playing of %zu, listener %.1f %.1f %.1f", n, g_voices.size(), g_listener[0], g_listener[1],
++         g_listener[2]);
++}
++
+ void Render(float* out, uint32_t frames) {
+     static std::vector<float> bins;  // the output thread alone renders
+     bins.assign(size_t(frames) * kBins, 0.0f);
+@@ -628,6 +668,7 @@ void Render(float* out, uint32_t frames) {
+         MixVoice(v, bins.data(), frames);
+     }
+     if (dsp::Loaded()) dsp::Run(bins.data(), frames);
++    TraceVoices();
+     for (uint32_t i = 0; i < frames; i++) {
+         const float* b = &bins[size_t(i) * kBins];
+         out[i * 2] = std::clamp(b[kFrontLeft] + kFold * (b[kCentre] + b[kBackLeft]), -1.0f, 1.0f);
+@@ -824,7 +865,14 @@ HLE_STDCALL(IDirectSound_SetMixBinHeadroom, 3) {
+ }
+ HLE_STDCALL(IDirectSound_CommitDeferredSettings, 1) { return 0; }
+ HLE_STDCALL(IDirectSound_SetDopplerFactor, 3) { return 0; }
+-HLE_STDCALL(IDirectSound_SetRolloffFactor, 3) { return 0; }
++// (this, factor, apply)
++HLE_STDCALL(IDirectSound_SetRolloffFactor, 3) {
++    std::lock_guard<std::recursive_mutex> lock(g_lock);
++    float f = ArgF(a, 1);
++    if (f != g_rolloff) LOGR("dsound: rolloff factor %g", f);
++    g_rolloff = std::max(f, 0.0f);
++    return 0;
++}
+ HLE_STDCALL(IDirectSound_SetDistanceFactor, 3) { return 0; }
+ HLE_STDCALL(IDirectSound_SetVelocity, 5) { return 0; }
+ // (this, DSI3DL2LISTENER, apply): room, room HF, reflections and reverb are integers
