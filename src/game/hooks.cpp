@@ -1,4 +1,4 @@
-// Hooks for default.xbe. A strong definition replaces the recompiled function at that address, for example:
+﻿// Hooks for default.xbe. A strong definition replaces the recompiled function at that address, for example:
 //
 // #include "xdk/hle.h"
 //
@@ -12,3 +12,4 @@
 #include "core/log.h"
 
 #include "xdk/hle.h"
+

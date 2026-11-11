@@ -41,3 +41,35 @@ planned. To check: whether this PAL title accepts the NTSC-M/60 Hz report and wh
   (the Hor+ HUD narrowing) stay inactive until this game's projection hook exists; first boots run with `aspect = 1`.
 - Host side `src/common`: autopilot, watch, pad map and CPU pinning from IndyPort (`SCAR_AUTOPILOT`, `SCAR_WATCH`,
   `SCAR_NOPIN`); `game_info.cpp` names the game (exe SCAR.exe, game code SCAR.dll).
+
+## First boot (2026-11-11)
+
+1. **Exit at start, KeBugCheck 0 at 0x217E0A.** That is the CRT exit path (0x217E20 -> doexit -> KeBugCheck): 0x49070
+   calls the engine start 0x1675E0, which returned 0x4008, and exits with code 3 on any result above 0x4000. TEMP
+   return-value hooks walked it down: 0x1675E0 -> 0x1672C0 (RenderWare engine init/open/start) -> 0xA7030 (open) ->
+   0xA6F70 -> the RW Xbox device system function 0xB68B0 (device block 0x2EC080, [+4]), request 0 (open) ->
+   0xB59F0, which looks for the requested video mode in the D3D mode list (Direct3D_GetAdapterModeCount 0x2582C0,
+   EnumAdapterModes 0x258360) and fails without a match.
+   - Requested: 640x480, refresh **50**, flags 0x40/0x20. The runtime reported an NTSC-M console (AV region
+     0x00400100), so D3D listed only 60 Hz modes.
+   - Fix (sdk patch): settings `tv_standard` (0 NTSC-M, 1 PAL-I 50 Hz, 2 PAL-I with PAL60) and `language` (XC_LANGUAGE).
+     PAL reports AV region 0x00800300 (PAL-I, 50 Hz) in ExQueryNonVolatileSetting 0x103, the EEPROM image and
+     AvSendTVEncoderOption's capabilities, game region 4; PAL60 adds video flag 0x00400000. With PAL D3D lists
+     640x480/720x480/640x576 at 50 Hz and RenderWare opens. SCAR's default (game_info.cpp Load) is 1.
+2. **Indirect call to 0x2195F0** (a CRT string routine, not found as a function): added to `[functions]`.
+3. **Black screen after the intro movie: self-deadlock on the stream lock.** The main thread waited forever in
+   0x205B10 on the semaphore [0x324DF8] (WaitForSingleObject wrapper 0x93FB9, release 0x93EFD = ReleaseSemaphore),
+   which it already held. TEMP hooks on the wrappers with kernel::LogGuestStack showed the nesting: 0x205B10 (a file
+   device's message handler, lock held) -> 0x1D8970 (stream read through a vtable) -> 0x1D8F70, which calls
+   ReadFile (0x9373D) with an OVERLAPPED; if ReadFile returns TRUE it calls the completion 0x1D9900 at once, which
+   calls back into 0x205B10 -> lock again. Only ReadFile = FALSE with ERROR_IO_PENDING (0x3E5) defers the
+   completion. On the console DVD reads are pending; the runtime finished them and returned STATUS_SUCCESS.
+   - Fix (sdk patch): `kernel::g_pending_async_io` (opt in, SCAR sets it in game_info.cpp Init). Files opened without
+     FILE_SYNCHRONOUS_IO_* remember `async`; their reads and writes still complete at once (IoStatus, event, APC)
+     but return STATUS_PENDING (0x103). The title sees the result on its next poll, outside its lock.
+4. Result: intro movies play (XMV, recompiled decoder; colours look washed out, to check), then the title screen
+   "Please press START to begin" in English. Its text draws as dark blocks: next.
+
+- Build note: the runtime rebuilds the game code in the exe (~5.5 min) when SCAR.dll looks older than SCAR.exe or its
+  stamp (`out/build/release/compiler/work/SCAR/built.txt`) names another exe. `tools/dev_build.ps1` builds with
+  cmake, deletes that stamp and touches the DLL.

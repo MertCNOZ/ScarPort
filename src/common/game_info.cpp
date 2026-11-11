@@ -10,6 +10,7 @@
 #include "app/app.h"
 #include "core/input.h"
 #include "core/log.h"
+#include "kernel/kernel.h"
 
 namespace game {
 void PinGuestThreads();                       // cpu.cpp
@@ -28,11 +29,17 @@ void Rumble(int, uint16_t& left, uint16_t& right) {
     right = uint16_t(uint32_t(right) * g_rumble / 100);
 }
 
-void Load(const void* table) { LoadPadMap(table); }
+// the settings file's extra keys; a PAL console unless the file says otherwise: the game asks for a 50 Hz mode and
+// exits when the mode list has none (PORT_NOTES, first boot)
+void Load(const void* table) {
+    LoadPadMap(table);
+    if (!static_cast<const toml::table*>(table)->contains("tv_standard")) app::Get().tv_standard = 1;
+}
 void Save(void* table) { SavePadMap(table); }
 
 // before the window and boot: guest threads on one core, the autopilot if SCAR_AUTOPILOT is set
 void Init() {
+    kernel::g_pending_async_io = true;  // overlapped reads return STATUS_PENDING, as on the console
     PinGuestThreads();
     StartAutopilot();
     StartWatch();

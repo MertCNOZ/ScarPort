@@ -12,6 +12,7 @@ library = "SCAR.dll"  # <exe>.dll, which the executable delay loads
 
 # extra entry points
 [functions]
+0x2195F0 = ""  # CRT string routine, an indirect call target (first boot, 2026-11-11)
 
 # functions the host replaces or calls by name, 0 where the image has none
 [symbols]
