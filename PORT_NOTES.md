@@ -73,3 +73,23 @@ planned. To check: whether this PAL title accepts the NTSC-M/60 Hz report and wh
 - Build note: the runtime rebuilds the game code in the exe (~5.5 min) when SCAR.dll looks older than SCAR.exe or its
   stamp (`out/build/release/compiler/work/SCAR/built.txt`) names another exe. `tools/dev_build.ps1` builds with
   cmake, deletes that stamp and touches the DLL.
+
+## Menus: text and hand-found D3D symbols (2026-11-11)
+
+- **Text drawn as dark blocks**: D3DDevice_SetPalette was not found by the signatures, so P8 (palettized) font
+  textures had no palette. Found by its stores to CDevice_Palettes (+0xF98): **0x254740** (ret 8, RenderWare calls it
+  at 0xB18BF). Text reads right with it.
+- **Crash on START (null read at guest 4)**: RenderWare's im2D (0xBF1D8) writes raw NV2A commands through
+  D3DDevice_BeginPush **0x256B60** (MakeSpace, then room for count + 1 dwords) and D3DDevice_EndPush **0x256B80**
+  (stores the end at CDevice_Push, ret 4). Named, the runtime's HLE runs the pushed commands.
+- **Menu strings showed other strings' glyphs** ("New Profileile", "BACKCT"): a string's vertices were overwritten by
+  the next string before the draw was taken ("Delete Profile" kept "ile" after "New Profile" landed on its first 11
+  quads; "SELECT" -> "BACK" + "CT"). The library waits on the vertex buffer's GPU time stamp before refilling it in
+  D3D_BlockOnNonSurfaceResource, which the runtime replaces with a real wait, but the signatures missed it: found as
+  **0x257120** (BlockOnTime 0x256D70 on the fence [res+8] with 0x10, or the device time when the resource is
+  referenced, 0x780000). All menu text is right now.
+- Remaining text detail: glyph edges show a bit of the neighbouring glyph at 2x render scale (bilinear on the font
+  sheet); not caused by ui_upscale. For the graphics step.
+- After the title screen the game shows its own language choice (flags: Spanish, English, Italian, ...; English lit
+  with XC_LANGUAGE 1), then PROFILE MANAGEMENT (New/Load/Save/Delete Profile). B on that menu goes back to the title:
+  a profile is required. `tools/ap_to_title.sh` skips the intro movies with A, checking the title text by pixels.
