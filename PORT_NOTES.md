@@ -204,3 +204,8 @@ planned. To check: whether this PAL title accepts the NTSC-M/60 Hz report and wh
 - Seen: a small grey square at the top left of TRACK SELECTION on a widened view (an item off screen at 4:3 brought
   in by the narrowing). Scripts: tools/checkpx.ps1 and crop_hud.ps1 now map 4:3 coordinates to any window size;
   ap_to_title.sh presses A at most 12 times.
+- Text: the doubled glyph edges seen on the first boots ("PPlease") were the stale vertex data fixed by
+  D3D_BlockOnNonSurfaceResource; menu and HUD text is clean at 4:3 and 16:9.
+- Movie colours: sampled 123 intro frames, Y mostly 16..235 (a few 0/246 overshoots): XMV output is studio range,
+  so the runtime's BT.601 studio range YUY2 conversion is right; the bright look is the intro's own white.
+- Checked after these changes: 4:3 (1280x960) and 16:9 (1600x900) both reach the race with no error.
