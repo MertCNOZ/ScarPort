@@ -42,6 +42,9 @@ void Save(void* table) { SavePadMap(table); }
 void Init() {
     // overlapped reads return STATUS_PENDING, as on the console; SCAR_NOPENDING=1 turns it off (comparison runs)
     kernel::g_pending_async_io = !std::getenv("SCAR_NOPENDING");
+    // SCAR_IO_DELAY_US=<n> also reports their completion n microseconds later, with the data arriving then (tests)
+    if (const char* delay = std::getenv("SCAR_IO_DELAY_US"))
+        kernel::g_pending_async_io_delay_us = uint32_t(std::strtoul(delay, nullptr, 10));
     PinGuestThreads();
     StartAutopilot();
     StartWatch();

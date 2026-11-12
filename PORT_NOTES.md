@@ -125,6 +125,37 @@ planned. To check: whether this PAL title accepts the NTSC-M/60 Hz report and wh
     of waiting for the prefetched data.
   - `SCAR_NOPENDING=1` (game_info.cpp) turns pending off for comparison: then the boot deadlocks again right after
     the intro (opening Music/XBOX/M2.rws, also an async 0x48 file), so pending is needed for the music stream.
-  - Next: find how the virtual file (0x1013F0 / 0x100C10, mode 2) waits for the prefetcher, and make completion
-    visible the way the console does (likely: report completion of a finished read on the first poll, or complete
-    on a worker thread a little later instead of at once).
+  - Solved, see "Track selection fixed" below.
+
+## Track selection fixed; in the race (2026-11-12)
+
+- **Root cause of the track selection crash: the runtime moved the file pointer of overlapped files.** At the
+  track selection screen the game opens GfxPak.mix a second time for overlapped reads (options 0x48) and streams the
+  preview pictures (IS_TrkSelBig_<track>01..04, bStatic 0) through a chunked reader:
+  - the client 0xE5360 asks for 32 KiB, then the rest (168 bytes) of each 0x80A8 byte texture dictionary;
+  - the reader 0xE62B0 (messages 2 open, 4 seeked, 5 read done) reads 32 KiB chunks aligned down from the file's
+    offset into its buffer [ctx+0x130] and copies to the client (0xE6AC0, 0xE6573);
+  - the stream (0x1D8F70, device table [stream+0x38]+0x28) reads with ReadFile + OVERLAPPED at its own position
+    [stream+8] and, when a read completes (inline at 0x1D906C or in the poller 0x1D9370 at 0x1D9425), seeks the
+    stream forward by the bytes read (device +0x10, relative).
+  - The runtime's Transfer also set the file's position to offset + bytes for every file. NT keeps a current byte
+    offset only for synchronous file objects (FILE_SYNCHRONOUS_IO_*); with both, every second chunk was read
+    0x8000 too far on (traced: the chunk meant for 0xA10000 held the bytes of 0xA18000). The picture's dictionary
+    then held old bytes at its end, the RW read stopped at a bad chunk header (RW errors 5, 0x8000001A, 0x16), the
+    lookup by sprite id (A9504859 = laguna_big_02) failed and a sprite with no texture crashed 0x16C480.
+  - Fix (sdk patch, files.cpp): `File::synchronous` from the create options; only such files move `pos`.
+  - Ruled out on the way: the I/O timing (sync, pending, completion delayed 3-20 ms, data arriving late: all failed
+    the same way before the fix), CPU pinning (SCAR_NOPIN), the texture packs.
+- The sdk patch keeps an opt-in `kernel::g_pending_async_io_delay_us` (completion and data on a host thread after
+  that many microseconds); SCAR does not need it (`SCAR_IO_DELAY_US` for tests). Pending reads stay on: without them
+  the boot still deadlocks after the intro (`SCAR_NOPENDING=1`).
+- **Race reached and driven** (autopilot only): Instant Action > Laguna Seca > Alfa 147 (first car) > race with 7
+  AI cars, HUD (position, lap, timer, rev counter, gear, km/h) drawn right. Right trigger accelerates, the left stick
+  steers (turned the car around: "WRONG WAY!"). The gearbox stays in 1st (manual gears by default?), to look at with
+  the controls.
+- **Game speed**: the race timer runs at real time (11.52 s in 11.51 s of wall time). Full throttle for 5 s from
+  the green light gives the same place and speed (49-50 km/h, rev limit in 1st) at fps_cap 60 and 30, so the
+  simulation is time based, not frame based. The runtime presents at 60 fps with a 60 Hz vertical blank while the
+  game asked for a 50 Hz (PAL) mode; that does not change the game's speed.
+- Tests: `tools/ap_race_accel.sh` (from track selection into the race, 5 s full throttle, HUD crops by
+  `tools/crop_hud.ps1`).
