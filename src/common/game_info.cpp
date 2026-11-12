@@ -23,6 +23,9 @@ void SavePadMap(void* table);
 void MapPad(int port, input::Pad& pad);
 uint32_t g_rumble = 100;         // percent of the game's rumble
 uint32_t g_draw_distance = 100;  // percent of the game's far clip (src/game/hooks.cpp)
+extern bool g_show_fps;          // fps.cpp
+void FpsOverlay(double fps);
+bool FpsMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result);
 
 // the controller's rumble scaled by the rumble setting
 void Rumble(int, uint16_t& left, uint16_t& right) {
@@ -73,14 +76,16 @@ const app::GameInfo app::kGame = {
     .missing = L"The game was not found. Open ScarPort.exe and choose your disc image (.iso) or the folder of the "
                L"extracted game (with default.xbe), or put either in the assets folder beside the game.",
     .images = {{"default.xbe", "SCAR"}},  // each recompiled xbe and its exe, for title launches
-    .options = {{"rumble", nullptr, &game::g_rumble}, {"draw_distance", nullptr, &game::g_draw_distance}},
+    .options = {{"rumble", nullptr, &game::g_rumble},
+                {"draw_distance", nullptr, &game::g_draw_distance},
+                {"show_fps", &game::g_show_fps, nullptr}},
     .load = game::Load,
     .save = game::Save,
     .init = game::Init,
     .loaded = nullptr,
     .window = nullptr,
-    .message = nullptr,
-    .ui = nullptr,
+    .message = game::FpsMessage,  // F9: the frame counter
+    .ui = game::FpsOverlay,       // the frame counter
     .pad = game::Pad,
     .rumble = game::Rumble,
 };

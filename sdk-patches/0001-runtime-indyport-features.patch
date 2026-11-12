@@ -192,7 +192,7 @@ index e36f7ac..faad364 100644
  }
  
 diff --git a/runtime/app/settings.cpp b/runtime/app/settings.cpp
-index 075b3b7..6766a46 100644
+index 075b3b7..9f2b698 100644
 --- a/runtime/app/settings.cpp
 +++ b/runtime/app/settings.cpp
 @@ -54,6 +54,17 @@ void Load() {
@@ -209,7 +209,7 @@ index 075b3b7..6766a46 100644
 +    s.fov = std::clamp(t["fov"].value_or(s.fov), 70u, 120u);
 +    s.game_path = t["game_path"].value_or(s.game_path);
 +    s.tv_standard = std::min(t["tv_standard"].value_or(s.tv_standard), 2u);
-+    s.language = std::clamp(t["language"].value_or(s.language), 1u, 9u);
++    s.language = std::clamp(t["game_language"].value_or(s.language), 1u, 9u);
      for (const Option& o : kGame.options) {
          if (o.flag) *o.flag = t[o.key].value_or(*o.flag);
          else *o.value = t[o.key].value_or(*o.value);
@@ -221,7 +221,7 @@ index 075b3b7..6766a46 100644
 +                  {"join_ip", s.join_ip},
 +                  {"game_path", s.game_path},
 +                  {"tv_standard", int64_t(s.tv_standard)},
-+                  {"language", int64_t(s.language)},
++                  {"game_language", int64_t(s.language)},
 +                  {"texture_packs", s.texture_packs},
 +                  {"ui_upscale", s.ui_upscale},
 +                  {"video_filter", s.video_filter},

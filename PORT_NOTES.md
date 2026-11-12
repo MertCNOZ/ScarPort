@@ -211,3 +211,22 @@ planned. To check: whether this PAL title accepts the NTSC-M/60 Hz report and wh
   so the runtime's BT.601 studio range YUY2 conversion is right; the bright look is the intro's own white.
 - Checked after these changes: 4:3 (1280x960) and 16:9 (1600x900) both reach the race with no error.
 - Decided (user): menu background movies stay 4:3 with side bars on a widened view (no zoom to fill).
+
+## Launcher, ScarPort.exe (2026-11-12)
+
+- From IndyPort's launcher (`D:\Game Setups\Indy\launcher`, see portkit/LAUNCHER_REFERENCE.md): CMake target
+  `ScarLauncher` (OUTPUT_NAME ScarPort) beside SCAR.exe, Win32 + D3D11 + Dear ImGui, SDL3 for controllers.
+- Adapted: names (ScarPort 0.1.0, SCAR.exe, title id 4c530002), graphite and red colours, the game's buttons (LT
+  brake, RT accelerate; the rest as set in the game's own Controllers > Configuration), Game page: game language
+  (English, Français, Deutsch, Español, Italiano -> `game_language`, XC_LANGUAGE 1/4/3/5/6), texts and About
+  (no affiliation with Milestone, Black Bean Games, Alfa Romeo, Microsoft), update repo MertCNOZ/ScarPort (not created
+  yet: the check fails quietly), SCARPORT_UPDATE_URL for tests. Removed for now: the keyboard and mouse section and
+  the button icon packs (the port has no keyboard input or icon packs yet).
+- The runtime's game language key is `game_language` (it was `language`, which the launcher uses for its own UI
+  language).
+- Art: placeholder banner and icon drawn by `tools/make_launcher_art.ps1` (no game or brand images); to be replaced
+  with free to use art.
+- Game side: `show_fps` option and F9 toggle, frame counter drawn with ImGui from the runtime's fps (src/common/fps.cpp).
+- Translations: 18 new entries in tools/lang_table.py (Turkish, Russian), launcher/lang_table.inc regenerated.
+- Checked: opens, Turkish UI from Windows' language, finds the extracted game in assets, reads settings.toml. The
+  user tests the pages and Play.

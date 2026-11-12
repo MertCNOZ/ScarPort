@@ -37,3 +37,23 @@ endif()
 
 # target name = GAME_EXE in build.bat, xbe = GAME_XBE
 add_xbe_image(SCAR default.xbe game.toml ${GAME_PARTITIONS} game)
+
+# the launcher, ScarPort.exe: Dear ImGui on Win32 and Direct3D 11, beside the game's exe
+add_executable(ScarLauncher WIN32
+    launcher/main.cpp
+    launcher/key_icons.cpp
+    launcher/lang.cpp
+    launcher/update.cpp
+    launcher/launcher.rc
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp)
+target_include_directories(ScarLauncher SYSTEM PRIVATE ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+target_link_libraries(ScarLauncher PRIVATE tomlplusplus::tomlplusplus SDL3::SDL3-static shell32 shlwapi comdlg32 ole32 windowscodecs gdiplus winhttp d3d11 dxgi)
+set_target_properties(ScarLauncher PROPERTIES OUTPUT_NAME "ScarPort")
+# the resource script embeds these: a new image rebuilds it
+set_source_files_properties(launcher/launcher.rc PROPERTIES OBJECT_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/launcher/banner.jpg;${CMAKE_CURRENT_SOURCE_DIR}/launcher/scarport.ico")
