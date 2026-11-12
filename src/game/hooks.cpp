@@ -6,7 +6,11 @@
 // X86_FUNC(sub_00012345) {
 //     __imp__sub_00012345(ctx, base);  // the original
 // }
+#include <algorithm>
 #include <cstdint>
+#include <unordered_map>
+#include <mutex>
+#include <bit>
 
 #include "app/app.h"
 #include "core/log.h"
@@ -16,27 +20,92 @@
 
 
 
+namespace game {
+extern uint32_t g_draw_distance;  // game_info.cpp: draw_distance in the settings, percent
+}
+
+namespace {
+// a screen camera's raster: [camera+0x60], its type at raster+0x20 (2 rwRASTERTYPECAMERA, 5 a camera texture)
+bool ScreenCamera(uint8_t* base, uint32_t camera) {
+    uint32_t raster = camera ? X86_MEM32(camera + 0x60) : 0;
+    return raster && X86_MEM8(raster + 0x20) == 2;
+}
+// the far planes this code set, per camera: a camera whose far plane is not one of them still has the game's
+std::unordered_map<uint32_t, float> g_far_set;
+std::mutex g_far_lock;
+}  // namespace
+
+// Draw distance: RwCameraSetFarClipPlane 0xAE930(camera, far) stores the far plane at camera+0x84 and rebuilds the
+// projection and frustum. For a screen camera it is scaled by draw_distance (25-400 %), so the track's far geometry
+// inside the frustum is drawn further out; 100 leaves the game's value. The race camera gets its far plane when it
+// is made, before it has its raster, so the view window hook below scales it too, once it is known as a screen camera.
+X86_EXTERN_FUNC(__imp__sub_000AE930);
+X86_FUNC(sub_000AE930) {
+    uint32_t camera = X86_MEM32(ctx.esp + 4);
+    uint32_t percent = std::clamp(game::g_draw_distance, 25u, 400u);
+    if (percent != 100 && ScreenCamera(base, camera)) {
+        float far = X86_MEMF32(ctx.esp + 8) * float(percent) / 100.0f;
+        X86_MEMF32(ctx.esp + 8) = far;
+        std::lock_guard<std::mutex> lock(g_far_lock);
+        g_far_set[camera] = far;
+    }
+    __imp__sub_000AE930(ctx, base);
+}
+
+// the game's far plane of a screen camera scaled, if this code has not done it (see above)
+void ScaleFarPlane(X86Context& ctx, uint8_t* base, uint32_t camera) {
+    uint32_t percent = std::clamp(game::g_draw_distance, 25u, 400u);
+    if (percent == 100) return;
+    float far = X86_MEMF32(camera + 0x84);
+    {
+        std::lock_guard<std::mutex> lock(g_far_lock);
+        auto it = g_far_set.find(camera);
+        if (it != g_far_set.end() && it->second == far) return;
+    }
+    LOGR("view: far clip %.1f -> %.1f (camera %08X)", far, far * float(percent) / 100.0f, camera);
+    uint32_t esp = ctx.esp, eax = ctx.eax, ecx = ctx.ecx, edx = ctx.edx;
+    X86_PUSH32(std::bit_cast<uint32_t>(far));  // scaled by the hook
+    X86_PUSH32(camera);
+    X86_PUSH32(0);  // return address, unused
+    sub_000AE930(ctx, base);
+    ctx.esp = esp;
+    ctx.eax = eax;
+    ctx.ecx = ecx;
+    ctx.edx = edx;
+}
+
 // Widescreen without stretching (Hor+): RwCameraSetViewWindow 0xAEB30(camera, &viewWindow) stores the view window's
 // half extents (tangents of the half angles) at camera+0x68 and their reciprocals at +0x70; RenderWare builds the
 // projection and the frustum's clip planes from them. For a camera drawing to the screen (frame buffer raster
 // [camera+0x60] of type 2, rwRASTERTYPECAMERA; type at raster+0x20), the horizontal extent is widened by
 // app::WideFactor while the call runs, so the view is wider and nothing at the new edges is culled; the caller's
 // own value is put back, so a camera set again from what it read keeps its size. Cameras drawing to a texture
-// (type 5) keep their view.
+// (type 5) keep their view. The fov setting (70-120, percent of the game's view) scales both extents of a screen
+// camera alike (their tangents), except for the camera the 2D layer and the race HUD are drawn with (made at boot,
+// its view window set from 0x18A748): the HUD is 3D quads in front of it and would shrink with a wider view.
 X86_EXTERN_FUNC(__imp__sub_000AEB30);
 X86_FUNC(sub_000AEB30) {
     uint32_t camera = X86_MEM32(ctx.esp + 4), vw = X86_MEM32(ctx.esp + 8);
     uint32_t raster = camera ? X86_MEM32(camera + 0x60) : 0;
     uint8_t type = raster ? X86_MEM8(raster + 0x20) : 0;
     float k = app::WideFactor();
-    float x = vw ? X86_MEMF32(vw) : 0;
-    bool widen = vw && k != 1.0f && type == 2;
+    bool hud_camera = X86_MEM32(ctx.esp) == 0x18A748;
+    float f = hud_camera ? 1.0f : float(std::clamp(app::Get().fov, 70u, 120u)) / 100.0f;
+    float x = vw ? X86_MEMF32(vw) : 0, y = vw ? X86_MEMF32(vw + 4) : 0;
+    bool widen = vw && (k != 1.0f || f != 1.0f) && type == 2;
     static int logged = 0;
     if (logged++ < 8)
         LOGR("view: camera %08X raster %08X type %u %dx%d window %.4f x %.4f%s (from %08X)", camera, raster, type,
              raster ? X86_MEM32(raster + 0xC) : 0, raster ? X86_MEM32(raster + 0x10) : 0, x, vw ? X86_MEMF32(vw + 4) : 0.0f,
              widen ? " widened" : "", X86_MEM32(ctx.esp));
-    if (widen) X86_MEMF32(vw) = x * k;
+    if (widen) {
+        X86_MEMF32(vw) = x * k * f;
+        X86_MEMF32(vw + 4) = y * f;
+    }
     __imp__sub_000AEB30(ctx, base);
-    if (widen) X86_MEMF32(vw) = x;
+    if (widen) {
+        X86_MEMF32(vw) = x;
+        X86_MEMF32(vw + 4) = y;
+    }
+    if (type == 2) ScaleFarPlane(ctx, base, camera);
 }

@@ -172,3 +172,35 @@ planned. To check: whether this PAL title accepts the NTSC-M/60 Hz report and wh
   dead zone in the game's throttle, to look at in the controls step (with the real trigger curve).
 - A play session by the user (8 minutes, real controller) logged no error and exited cleanly.
 - Decided: no steering wheel support; controls are gamepad (SDL3) and keyboard.
+
+## Graphics: widescreen, movies, FOV, draw distance (2026-11-12)
+
+- Display settings come from the runtime (display_mode, width/height, render_percent, fps_cap, vsync,
+  anisotropic_filtering); tested windowed 1280x960 and 1600x900.
+- **RenderWare camera functions** (SSE code, found from a caller that sets a view window from fptan, 0x18FA59):
+  RwCameraSetViewWindow **0xAEB30** (view window at camera+0x68, reciprocals +0x70), RwCameraSetNearClipPlane
+  **0xAE870** (+0x80), RwCameraSetFarClipPlane **0xAE930** (+0x84). Camera frame buffer raster at camera+0x60, raster
+  type byte at raster+0x20 (2 camera, 5 camera texture), width/height at +0xC/+0x10.
+- **Hor+** (hooks.cpp): the view window's x is scaled by app::WideFactor while 0xAEB30 runs, for cameras on a type 2
+  raster; the caller's value is put back. Cameras seen: the boot camera (window 0.5 x 0.375, from 0x18A748: the 2D
+  layer and the race HUD, 3D quads in front of it), the race camera (0.3821 x 0.2866, from 0x15F37F), a 512x128
+  camera texture (from 0x18FA74, untouched).
+- **2D layers stay 4:3** (sdk d3d12.cpp): RenderWare's Im2D and fonts are fixed function draws (vs 0x142, XYZ +
+  diffuse + tex in console pixels) under an orthographic projection, not XYZRHW, so the HUD narrowing missed them.
+  Such draws ("ortho_draw_") on the main target narrower than 90% of the screen now get hud.xy like XYZRHW ones
+  (applied to the wvp's x/y columns); they count as screen draws for ui_upscale and the movie filter too. The menu
+  bars and full screen backgrounds stay full width.
+- **Movies** (sdk): XMV frames are 640x480 YUY2 linear textures drawn with a vertex program (vs B0001321); the movie
+  check now also takes YUV textures in any draw, and hud.xy moved from the XYZRHW vertex code into the shared
+  epilogue (q.xy scaled in clip space), so program draws can be fitted. Movies show 4:3 with side bars. The menu
+  backgrounds are movies too, so menus have side bars while their title/bottom bars span the screen.
+- **FOV** (`fov`, 70-120 %): both view window extents scaled for screen cameras except the HUD camera (0x18A748);
+  `app::g_hud_follows_fov` (new sdk flag, IndyPort's behaviour by default) is false for SCAR, so the runtime does not
+  scale the 2D layer either. Tested at 115: wider scene, HUD unchanged.
+- **Draw distance** (`draw_distance`, 25-400 %, game option in settings.toml): the far plane of screen cameras
+  scaled in 0xAE930; the race camera gets its far plane (100) when made, before it has a raster, so the view window
+  hook also scales it once it is known as a screen camera (calls the setter, remembers what it set per camera).
+  Tested at 200: race camera 100 -> 200, others 2000 -> 4000.
+- Seen: a small grey square at the top left of TRACK SELECTION on a widened view (an item off screen at 4:3 brought
+  in by the narrowing). Scripts: tools/checkpx.ps1 and crop_hud.ps1 now map 4:3 coordinates to any window size;
+  ap_to_title.sh presses A at most 12 times.

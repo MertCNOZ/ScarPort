@@ -21,7 +21,8 @@ void AutopilotPad(int port, input::Pad& pad);  // autopilot.cpp
 void LoadPadMap(const void* table);            // pad_map.cpp
 void SavePadMap(void* table);
 void MapPad(int port, input::Pad& pad);
-uint32_t g_rumble = 100;  // percent of the game's rumble
+uint32_t g_rumble = 100;         // percent of the game's rumble
+uint32_t g_draw_distance = 100;  // percent of the game's far clip (src/game/hooks.cpp)
 
 // the controller's rumble scaled by the rumble setting
 void Rumble(int, uint16_t& left, uint16_t& right) {
@@ -42,6 +43,7 @@ void Save(void* table) { SavePadMap(table); }
 void Init() {
     // overlapped reads return STATUS_PENDING, as on the console; SCAR_NOPENDING=1 turns it off (comparison runs)
     kernel::g_pending_async_io = !std::getenv("SCAR_NOPENDING");
+    app::g_hud_follows_fov = false;  // the fov setting widens the scene cameras only; the HUD keeps its size
     // SCAR_IO_DELAY_US=<n> also reports their completion n microseconds later, with the data arriving then (tests)
     if (const char* delay = std::getenv("SCAR_IO_DELAY_US"))
         kernel::g_pending_async_io_delay_us = uint32_t(std::strtoul(delay, nullptr, 10));
@@ -71,7 +73,7 @@ const app::GameInfo app::kGame = {
     .missing = L"The game was not found. Open ScarPort.exe and choose your disc image (.iso) or the folder of the "
                L"extracted game (with default.xbe), or put either in the assets folder beside the game.",
     .images = {{"default.xbe", "SCAR"}},  // each recompiled xbe and its exe, for title launches
-    .options = {{"rumble", nullptr, &game::g_rumble}},
+    .options = {{"rumble", nullptr, &game::g_rumble}, {"draw_distance", nullptr, &game::g_draw_distance}},
     .load = game::Load,
     .save = game::Save,
     .init = game::Init,

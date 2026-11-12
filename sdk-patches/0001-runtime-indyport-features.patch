@@ -1,5 +1,5 @@
 diff --git a/runtime/app/app.h b/runtime/app/app.h
-index 229e2fa..8118a5f 100644
+index 229e2fa..a1164a9 100644
 --- a/runtime/app/app.h
 +++ b/runtime/app/app.h
 @@ -22,11 +22,24 @@ struct Settings {
@@ -28,13 +28,16 @@ index 229e2fa..8118a5f 100644
  };
  
  Settings& Get();
-@@ -43,10 +56,15 @@ Mode Output();
+@@ -43,10 +56,18 @@ Mode Output();
  float RenderScale(uint32_t guest_height);
  // the output is 3:2 or wider: the console reports a widescreen TV and the frame is shown 16:9, else 4:3 as on a 4:3 TV
  bool Widescreen();
 +// how much wider than 4:3 the picture is shown: the output's aspect over 4:3 in the widescreen mode, else 1. The game
 +// widens its view by it (Hor+) and screen space HUD pieces are drawn narrower by it, so nothing looks stretched
 +float WideFactor();
++// the fov setting also scales the screen space HUD (titles that draw 3D items into their HUD, IndyPort); a game sets
++// it false when only its cameras take the field of view
++inline bool g_hud_follows_fov = true;
 +// the aspect the frame is shown at on the output
 +float ShownAspect();
  
@@ -367,7 +370,7 @@ index 7e6507d..b72ef2d 100644
      va_list ap;
      va_start(ap, fmt);
 diff --git a/runtime/gpu/d3d12.cpp b/runtime/gpu/d3d12.cpp
-index 3f9d4e7..9b165ac 100644
+index 3f9d4e7..4b2c865 100644
 --- a/runtime/gpu/d3d12.cpp
 +++ b/runtime/gpu/d3d12.cpp
 @@ -13,6 +13,7 @@
@@ -447,11 +450,12 @@ index 3f9d4e7..9b165ac 100644
      DXGI_FORMAT rtv = kBgra;  // the target's format
      bool over = false;        // premultiplied over the target, which keeps its alpha
  };
-@@ -736,6 +776,16 @@ private:
+@@ -736,6 +776,17 @@ private:
      uint32_t recent_used_next_ = 0;
      DrawBinds binds_;
      std::unordered_map<uint64_t, Tex> textures_;  // by data address, a P8 texture's with its palette's above
 +    bool screen_draw_ = false;  // the draw binding its textures is in screen space (ui_upscale)
++    bool ortho_draw_ = false;   // ... as the fixed function under an orthographic projection
 +    // a movie frame drawn on a widened view: how it is fitted (FitMovie)
 +    struct MovieFit {
 +        uint32_t data = 0;
@@ -464,7 +468,7 @@ index 3f9d4e7..9b165ac 100644
      std::unordered_map<uint64_t, Tex> pack_textures_;  // texture pack images by key, kept for the run
      std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> blit_psos_;
      Extension* ext_ = nullptr;
-@@ -768,6 +818,7 @@ private:
+@@ -768,6 +819,7 @@ private:
      uint32_t bb_w_ = 0;
      uint32_t bb_h_ = 0;
      float scale_ = 1.0f;
@@ -472,7 +476,7 @@ index 3f9d4e7..9b165ac 100644
      // surfaces locked without a wait: copies in flight, the newest finished one goes to guest memory
      struct Late {
          ComPtr<ID3D12Resource> rb[kFrames];
-@@ -962,6 +1013,7 @@ void D3D12Backend::CreateGammaLut() {
+@@ -962,6 +1014,7 @@ void D3D12Backend::CreateGammaLut() {
  
  void D3D12Backend::LoadSettings() {
      scale_ = app::RenderScale(guest_h_);
@@ -480,7 +484,7 @@ index 3f9d4e7..9b165ac 100644
      texturedumper::Update();
      ext_ = g_extension.get();
      if (ext_) {
-@@ -1081,7 +1133,11 @@ void D3D12Backend::ReleaseTarget(std::unordered_map<uint64_t, Target>::iterator
+@@ -1081,7 +1134,11 @@ void D3D12Backend::ReleaseTarget(std::unordered_map<uint64_t, Target>::iterator
  bool D3D12Backend::CreateTargetResource(Target& t, const Surface& s) {
      float sc = scale_;
      if (ext_) ext_->MakeTarget(s, t.depth, t.gw, t.gh, sc, t.fmt);
@@ -493,7 +497,7 @@ index 3f9d4e7..9b165ac 100644
      t.h = std::max(1u, uint32_t(std::lround(t.gh * sc)));
      D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
      D3D12_RESOURCE_DESC td = Texture2DDesc(DXGI_FORMAT_UNKNOWN, t.w, t.h);
-@@ -1410,8 +1466,9 @@ void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect
+@@ -1410,8 +1467,9 @@ void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect
      dev_->CreateShaderResourceView(lut_.Get(), &sv, Cpu(srv_heap_.Get(), slot + 1, srv_inc_));
      uint32_t si = EnsureBlitSamplers();
      Alloc cb = Upload(256, 256);
@@ -505,7 +509,7 @@ index 3f9d4e7..9b165ac 100644
      std::memcpy(cb.cpu, c, sizeof(c));
      DrawFullScreen(EnsureBlitPipeline(o.rtv, o.over), cb.gpu, slot, si);
  }
-@@ -1425,6 +1482,25 @@ ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const
+@@ -1425,6 +1483,25 @@ ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const
      if (it != blobs_.end()) return it->second.Get();
      ComPtr<ID3DBlob> code;
      ComPtr<ID3DBlob> err;
@@ -531,7 +535,7 @@ index 3f9d4e7..9b165ac 100644
      PerfScope perf_compile{g_perf.compile};
      g_perf.shaders++;
      HRESULT hr = D3DCompile(src.data(), src.size(), nullptr, nullptr, nullptr, entry, profile,
-@@ -1436,6 +1512,17 @@ ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const
+@@ -1436,6 +1513,17 @@ ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const
          return nullptr;
      }
      blobs_[hash] = code;
@@ -549,7 +553,7 @@ index 3f9d4e7..9b165ac 100644
      return code.Get();
  }
  
-@@ -1651,10 +1738,11 @@ void D3D12Backend::ExpandPoints(D3D12_GRAPHICS_PIPELINE_STATE_DESC& d, bool spri
+@@ -1651,10 +1739,11 @@ void D3D12Backend::ExpandPoints(D3D12_GRAPHICS_PIPELINE_STATE_DESC& d, bool spri
      d.RasterizerState.FrontCounterClockwise = FALSE;
  }
  
@@ -563,7 +567,7 @@ index 3f9d4e7..9b165ac 100644
  }
  
  // the XDK's screen space offset puts the console's positions half a pixel right and down of the host's, unless a
-@@ -1705,7 +1793,7 @@ ID3D12Resource* D3D12Backend::BindTargetTexture(const State& s, int stage, const
+@@ -1705,7 +1794,7 @@ ID3D12Resource* D3D12Backend::BindTargetTexture(const State& s, int stage, const
      info.kind = kTex2D;
      // a pass shrinking it averages each tap over a console texel, else upscaled taps skip texels and ghost
      Target* rt = FindTarget(s.rt, false);
@@ -572,7 +576,7 @@ index 3f9d4e7..9b165ac 100644
      if (!t.depth && box && k > kUpscaledMin && rt && rt != &t && (t.gw > rt->gw || t.gh > rt->gh)) {
          stages.wide[stage] = k;
          info.flags |= kTexWide;
-@@ -1874,6 +1962,11 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const
+@@ -1874,6 +1963,11 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const
              tx.pack_gen = 0;
          }
      }
@@ -584,7 +588,7 @@ index 3f9d4e7..9b165ac 100644
      if (tx.pack_gen != texturedumper::Generation()) LatchPackKey(tx, d, fi, colours);
      if (tx.pack_key) LatchPackImage(tx);
      const Tex& drawn = tx.swap ? *tx.swap : tx;
-@@ -1892,6 +1985,7 @@ void D3D12Backend::LatchPackKey(Tex& tx, const TextureDesc& d, const FormatInfo&
+@@ -1892,6 +1986,7 @@ void D3D12Backend::LatchPackKey(Tex& tx, const TextureDesc& d, const FormatInfo&
      texturedumper::Dump(key, d, p, colours);
      // dumping alone keys the bytes too: the pack image is not drawn then
      tx.pack_key = texturedumper::Replacing() ? key : 0;
@@ -592,19 +596,21 @@ index 3f9d4e7..9b165ac 100644
  }
  
  // the pack image for tx's bytes once it has loaded; textures with the same bytes share its GPU copy
-@@ -1952,6 +2046,11 @@ ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, DrawTexture
+@@ -1952,6 +2047,13 @@ ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, DrawTexture
      const FormatInfo& fi = Format(d.format);
      info.kind = TextureKind(d);
      info.rect = d.linear;
-+    // a movie frame (a large linear texture in a screen space draw) is scaled up with a sharper filter
-+    if (d.linear && screen_draw_ && d.width >= 256 && d.height >= 192 && info.kind == kTex2D) {
++    // a movie frame (a large linear texture in a screen space draw, or a YUV one in any: RenderWare titles draw their
++    // movies with a vertex program) is scaled up with a sharper filter and fitted to a widened view
++    bool yuv = d.format == 0x24 || d.format == 0x25;
++    if (d.linear && (screen_draw_ || yuv) && d.width >= 256 && d.height >= 192 && info.kind == kTex2D) {
 +        if (app::Get().video_filter) info.flags |= kTexSmooth;
 +        FitMovie(d);
 +    }
  
      // rendered by the GPU: sample the target itself; DXT data loaded over a target's memory is not it
      uint64_t alt = 0;
-@@ -2151,7 +2250,7 @@ bool OffsetsPolygons(const State& s, Topology topology) {
+@@ -2151,7 +2253,7 @@ bool OffsetsPolygons(const State& s, Topology topology) {
  
  // polygon offset slopes are per console pixel, an upscaled target's pixels are smaller
  float HostSlopeScale(const State& s, const Target* ds) {
@@ -613,7 +619,7 @@ index 3f9d4e7..9b165ac 100644
  }
  
  void D3D12Backend::KeyDepthStencil(const State& s, const Assembled& a, PsoKey& k) {
-@@ -2329,6 +2428,12 @@ void FillTransformConstants(const State& s, GuestExtent size, DrawConstants& c)
+@@ -2329,6 +2431,12 @@ void FillTransformConstants(const State& s, GuestExtent size, DrawConstants& c)
      float vpm[16] = {sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, v.max_z - v.min_z, 0, ox, oy, v.min_z, 1};
      float full[16];
      MatMul(wvp, vpm, full);
@@ -626,7 +632,7 @@ index 3f9d4e7..9b165ac 100644
      Transpose(full, c.wvp);
      Transpose(wv, c.wv);
      // normals take the inverse transpose of the upper 3x3
-@@ -2527,9 +2632,144 @@ void D3D12Backend::CaptureDraw(const State& s, uint32_t prim, uint32_t count, co
+@@ -2527,9 +2635,144 @@ void D3D12Backend::CaptureDraw(const State& s, uint32_t prim, uint32_t count, co
      CaptureTextures(s, stages);
  }
  
@@ -772,7 +778,7 @@ index 3f9d4e7..9b165ac 100644
      fputc('\n', cap_);
  }
  
-@@ -2628,16 +2868,19 @@ void D3D12Backend::SetViewportScissor(const State& s, uint32_t gw) {
+@@ -2628,16 +2871,19 @@ void D3D12Backend::SetViewportScissor(const State& s, uint32_t gw) {
      float W = float(bound_rt_ ? bound_rt_->w : bound_ds_->w);
      float H = float(bound_rt_ ? bound_rt_->h : bound_ds_->h);
      D3D12_VIEWPORT vp{0, 0, W, H, 0, 1};
@@ -796,16 +802,22 @@ index 3f9d4e7..9b165ac 100644
      }
      D3D12_RECT rect{std::clamp<LONG>(x0, 0, LONG(W)), std::clamp<LONG>(y0, 0, LONG(H)),
                      std::clamp<LONG>(x1, 0, LONG(W)), std::clamp<LONG>(y1, 0, LONG(H))};
-@@ -2834,6 +3077,8 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
+@@ -2834,6 +3080,14 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
  
      // stage textures, then the pixel shader made for them
      DrawTextures stages;
-+    screen_draw_ = a.pretransformed;
++    // in screen space: pretransformed (XYZRHW), or the fixed function under an orthographic projection (RenderWare's
++    // 2D layers: menus, fonts, movies)
++    {
++        const float* p = s.transforms[kTsProjection].data();
++        ortho_draw_ = !a.pretransformed && !(s.vs_handle & 1) && p[3] == 0 && p[7] == 0 && p[11] == 0 && p[15] == 1;
++    }
++    screen_draw_ = a.pretransformed || ortho_draw_;
 +    movie_draw_ = false;
      if (!BindStageTexturesAndTargets(s, stages)) return;
      PixelKey pk = MakePixelKey(s, stages.info);
      pk.quad = sh.quad;
-@@ -2855,6 +3100,40 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
+@@ -2855,6 +3109,40 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
      GuestExtent size;
      SurfaceSize(bound_rt_ ? s.rt : s.zs, size.w, size.h);
      DrawConstants c{};
@@ -817,7 +829,7 @@ index 3f9d4e7..9b165ac 100644
 +    // them. Full width draws (fades, loading pictures, movies) and anything placed at a depth stay as they are
 +    if (a.pretransformed && size.w == guest_w_ && size.h == guest_h_) {
 +        float wide = app::WideFactor(), lo = 0, hi = 0, zmax = 0;
-+        float fov = float(std::clamp(app::Get().fov, 70u, 120u)) / 100.0f;
++        float fov = app::g_hud_follows_fov ? float(std::clamp(app::Get().fov, 70u, 120u)) / 100.0f : 1.0f;
 +        if ((wide > 1.01f || std::fabs(fov - 1) > 1e-3f) && ScreenSpanX(a, lo, hi, &zmax) &&
 +            hi - lo < 0.9f * float(size.w) && zmax <= 1e-3f) {
 +            c.hud[0] = 1.0f / (wide * fov);
@@ -826,10 +838,10 @@ index 3f9d4e7..9b165ac 100644
 +    }
 +    // the same for the fixed function's 2D layers (RenderWare's Im2D, its fonts): untransformed positions under an
 +    // orthographic projection on the main target, narrower than 90% of the screen
-+    if (!a.pretransformed && !(s.vs_handle & 1) && size.w == guest_w_ && size.h == guest_h_) {
++    if (ortho_draw_ && size.w == guest_w_ && size.h == guest_h_) {
 +        const float* p = s.transforms[kTsProjection].data();
-+        float wide = app::WideFactor(), fov = float(std::clamp(app::Get().fov, 70u, 120u)) / 100.0f, lo = 0, hi = 0;
-+        if (p[3] == 0 && p[7] == 0 && p[11] == 0 && p[15] == 1 && (wide > 1.01f || std::fabs(fov - 1) > 1e-3f)) {
++        float wide = app::WideFactor(), fov = app::g_hud_follows_fov ? float(std::clamp(app::Get().fov, 70u, 120u)) / 100.0f : 1.0f, lo = 0, hi = 0;
++        if (wide > 1.01f || std::fabs(fov - 1) > 1e-3f) {
 +            float wv[16], wvp[16];
 +            MatMul(s.transforms[kTsWorld].data(), s.transforms[kTsView].data(), wv);
 +            MatMul(wv, p, wvp);
@@ -839,14 +851,14 @@ index 3f9d4e7..9b165ac 100644
 +            }
 +        }
 +    }
-+    if (movie_draw_ && a.pretransformed) {
++    if (movie_draw_) {
 +        c.hud[0] = movie_sx_;
 +        c.hud[1] = movie_sy_;
 +    }
      UploadConstants(s, sh, k, stages, size, c);
      if (ext_) binds_ = {};
  
-@@ -2877,9 +3156,9 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
+@@ -2877,9 +3165,9 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
  
  // a guest rect scaled to the target and clamped to it
  D3D12_RECT ScaledRect(const Target& t, int x0, int y0, int x1, int y1) {
@@ -859,7 +871,7 @@ index 3f9d4e7..9b165ac 100644
  }
  
  // rs: the rects buffer, reused across targets
-@@ -3055,8 +3334,8 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
+@@ -3055,8 +3343,8 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
      D3D12_CPU_DESCRIPTOR_HANDLE rh = Cpu(rtv_heap_.Get(), dst_t.view, rtv_inc_);
      cl_->OMSetRenderTargets(1, &rh, FALSE, nullptr);
      float gw = src_t.gw * l.kx, gh = src_t.gh * l.ky;  // the source in the guest pixels the rects use
@@ -870,7 +882,7 @@ index 3f9d4e7..9b165ac 100644
      bool listed = l.count && l.src_rects;
      uint32_t n = listed ? l.count : 1;
      for (uint32_t i = 0; i < n; i++) {
-@@ -3065,7 +3344,7 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
+@@ -3065,7 +3353,7 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
          DrawnRect r{.x0 = 0, .y0 = 0, .x1 = whole_w, .y1 = whole_h};
          if (listed) r = ReadDrawnRect(l.src_rects, l.dst_points, i);
          if (r.x1 <= r.x0 || r.y1 <= r.y0) continue;
@@ -879,7 +891,7 @@ index 3f9d4e7..9b165ac 100644
                            0, 1};
          LONG right = std::min(LONG(vp.TopLeftX + vp.Width), LONG(dst_t.w));
          LONG bottom = std::min(LONG(vp.TopLeftY + vp.Height), LONG(dst_t.h));
-@@ -3075,7 +3354,7 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
+@@ -3075,7 +3363,7 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
          cl_->RSSetScissorRects(1, &scissor);
          binds_ = {};
          float uv[4] = {r.x0 / gw, r.y0 / gh, (r.x1 - r.x0) / gw, (r.y1 - r.y0) / gh};
@@ -888,7 +900,7 @@ index 3f9d4e7..9b165ac 100644
          float mul = 1 / dst_t.range;
          BlitOptions o{.alpha = true, .taps = taps, .mul = mul, .rtv = dst_t.fmt};
          Blit(src_res, src_t.fmt, uv, o);
-@@ -3091,7 +3370,7 @@ void D3D12Backend::CopyByRegion(const Target& src_t, ID3D12Resource* src_res, D3
+@@ -3091,7 +3379,7 @@ void D3D12Backend::CopyByRegion(const Target& src_t, ID3D12Resource* src_res, D3
      Transition(dst_t.res.Get(), dst_t.state, D3D12_RESOURCE_STATE_COPY_DEST);
      D3D12_TEXTURE_COPY_LOCATION dl{dst_t.res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
      D3D12_TEXTURE_COPY_LOCATION sl{src_res, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
@@ -897,7 +909,7 @@ index 3f9d4e7..9b165ac 100644
      bool listed = l.count && l.src_rects;
      uint32_t n = listed ? l.count : 1;
      for (uint32_t i = 0; i < n; i++) {
-@@ -3101,15 +3380,15 @@ void D3D12Backend::CopyByRegion(const Target& src_t, ID3D12Resource* src_res, D3
+@@ -3101,15 +3389,15 @@ void D3D12Backend::CopyByRegion(const Target& src_t, ID3D12Resource* src_res, D3
          if (listed) {
              GuestRect r = ReadGuestRect(l.src_rects, i);
              b.left = ScaleUnsigned(r.left, dst_scale);
@@ -916,7 +928,7 @@ index 3f9d4e7..9b165ac 100644
              }
          }
          if (b.right <= b.left || b.bottom <= b.top || dx >= dst_t.w || dy >= dst_t.h) continue;
-@@ -3230,10 +3509,56 @@ void D3D12Backend::UploadGammaRamp() {
+@@ -3230,10 +3518,56 @@ void D3D12Backend::UploadGammaRamp() {
      cl_->CopyTextureRegion(&dl, 0, 0, 0, &sl, nullptr);
  }
  
@@ -976,7 +988,7 @@ index 3f9d4e7..9b165ac 100644
      float w = float(bb_w_);
      float h = float(bb_h_);
      float vw = std::min(w, h * aspect);
-@@ -3245,7 +3570,8 @@ void D3D12Backend::BlitFrame(Target& t) {
+@@ -3245,7 +3579,8 @@ void D3D12Backend::BlitFrame(Target& t) {
      cl_->RSSetScissorRects(1, &scissor);
      binds_ = {};
      Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -986,7 +998,7 @@ index 3f9d4e7..9b165ac 100644
  }
  
  void D3D12Backend::RenderUi() {
-@@ -3324,12 +3650,12 @@ void LogPerf() {
+@@ -3324,12 +3659,12 @@ void LogPerf() {
          Perf& p = g_perf;
          double n = double(perf_frames);
          double host = p.draw + p.clear + p.copy + p.present + p.sync;
@@ -1001,7 +1013,7 @@ index 3f9d4e7..9b165ac 100644
               "resource %.2f fence %.2f flush %.2f copy %.2f, next frame %.2f) | read-backs waited for: %.1f lock, "
               "%.1f NOOVERWRITE",
               g_perf_capture_ns.exchange(0) / n / 1e6, g_perf_wait_ns.exchange(0) / n / 1e6,
-@@ -3338,7 +3664,7 @@ void LogPerf() {
+@@ -3338,7 +3673,7 @@ void LogPerf() {
               g_perf_wait_kind_ns[3].exchange(0) / n / 1e6, g_perf_wait_kind_ns[4].exchange(0) / n / 1e6,
               g_perf_wait_kind_ns[5].exchange(0) / n / 1e6, g_perf_sync_block.exchange(0) / n,
               g_perf_sync_late.exchange(0) / n);
@@ -1010,7 +1022,7 @@ index 3f9d4e7..9b165ac 100644
               "hashed | %.1f tex uploads %.2f MB, %.1f new tex, %.1f new targets, %.1f target uploads, %.1f shrinks, "
               "%.1f read-backs %.1f late | %llu shaders %llu psos this second",
               p.draws / n, p.raw / n, p.verts / n / 1000.0, p.upload / n / 1048576.0, p.overflow / n, p.sigs / n,
-@@ -3394,12 +3720,14 @@ void D3D12Backend::WaitGpuFrame(uint64_t n) {
+@@ -3394,12 +3729,14 @@ void D3D12Backend::WaitGpuFrame(uint64_t n) {
  void D3D12Backend::ApplySettings() {
      if (texturedumper::Update()) ReleasePackTextures();
      float want = app::RenderScale(guest_h_);
@@ -1027,7 +1039,7 @@ index 3f9d4e7..9b165ac 100644
          bound_rt_ = bound_ds_ = nullptr;
      }
 diff --git a/runtime/gpu/shaders.cpp b/runtime/gpu/shaders.cpp
-index 9ff7b67..c293ac1 100644
+index 9ff7b67..f2327a3 100644
 --- a/runtime/gpu/shaders.cpp
 +++ b/runtime/gpu/shaders.cpp
 @@ -55,6 +55,7 @@ const char* kCommonTail = R"(    float4 spread[4];
@@ -1038,7 +1050,19 @@ index 9ff7b67..c293ac1 100644
  };
  )";
  
-@@ -404,6 +405,7 @@ std::string TexFetch(const PixelKey& k, int i) {
+@@ -227,8 +228,9 @@ const char* kVsEpilogue = R"(
+     // surf.w set: a point, which stays put since pulled out it would leave the target
+     if (surf.w == 0 && abs(p.x - (surf.x - 0.5)) < 1e-3) p.x = surf.x;
+     if (surf.w == 0 && abs(p.y - (surf.y - 0.5)) < 1e-3) p.y = surf.y;
+-    q.x = p.x * 2 / surf.x - 1;
+-    q.y = 1 - p.y * 2 / surf.y;
++    // on a widened view the HUD is drawn narrower about the centre and movies are fitted (hud.xy, 1 otherwise)
++    q.x = (p.x * 2 / surf.x - 1) * hud.x;
++    q.y = (1 - p.y * 2 / surf.y) * hud.y;
+     q.z = p.z * surf.z;
+     q.xyz *= p.w;
+     q.w = p.w;
+@@ -404,6 +406,7 @@ std::string TexFetch(const PixelKey& k, int i) {
          return F("float dp%d%s = dot(tc%d.xyz, %s);\n", n, coord == n ? "" : "n", coord, DotInput(map, src).c_str());
      };
      auto tex2d = [&](const std::string& uv) {
@@ -1046,7 +1070,7 @@ index 9ff7b67..c293ac1 100644
          if (t.flags & kTexWide) return F("spreadtap(tex%d, smp%d, %s, spread[%d], %s)", i, i, uv.c_str(), i, Hooks().ReadScale(t).c_str());
          return F("tex%d.Sample(smp%d, %s)", i, i, uv.c_str());
      };
-@@ -470,7 +472,30 @@ const char* kPsSbyte = R"(
+@@ -470,7 +473,30 @@ const char* kPsSbyte = R"(
  // unorm to byte b, less lo under 128 or hi from 128, over d
  float3 sbyte(float3 u, float lo, float hi, float d) { float3 b = u * 255; return (b - (b >= 128 ? hi : lo)) / d; }
  )";
@@ -1078,14 +1102,13 @@ index 9ff7b67..c293ac1 100644
      float4 c = 0;
      int n = (int)w.z;
      for (int y = 0; y < n; y++)
-@@ -769,7 +794,9 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
+@@ -769,7 +795,8 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
      if (pretransformed) {
          s += "    float4 rhw = " + v(0, "float4(0,0,0,1)") + ";\n";
          s += "    float w = rhw.w == 0 ? 1 : 1 / rhw.w;\n";
 -        s += "    oPos = float4(rhw.xy, rhw.z / surf.z, w);\n";
-+        // on a widened view the HUD is drawn narrower about the centre and movies are fitted (hud.xy, 1 otherwise)
-+        s += "    oPos = float4((rhw.x - surf.x * 0.5) * hud.x + surf.x * 0.5, (rhw.y - surf.y * 0.5) * hud.y + surf.y * 0.5,"
-+             " rhw.z / surf.z, w);\n";
++        // hud.xy (the widened view's HUD narrowing, movie fitting) is applied in kVsEpilogue
++        s += "    oPos = float4(rhw.x, rhw.y, rhw.z / surf.z, w);\n";
      } else {
          s += "    float4 ip = float4(" + v(0, "float4(0,0,0,1)") + ".xyz, 1);\n";
          s += "    float4 cp = mul(ip, wvp);\n";
