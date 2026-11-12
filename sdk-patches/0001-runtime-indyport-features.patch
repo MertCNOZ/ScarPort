@@ -159,10 +159,27 @@ index a7ddee4..7cfb465 100644
  
      if (other_name.empty()) {
 diff --git a/runtime/app/main.cpp b/runtime/app/main.cpp
-index e36f7ac..9a07980 100644
+index e36f7ac..faad364 100644
 --- a/runtime/app/main.cpp
 +++ b/runtime/app/main.cpp
-@@ -73,7 +73,7 @@ void DumpThreads() {
+@@ -42,6 +42,16 @@ LONG WINAPI WriteCrashDump(EXCEPTION_POINTERS* e) {
+     if (kernel::Thread* t = kernel::Current(); e && t && t->ctx) {
+         auto* r = e->ExceptionRecord;
+         LOGE("exception %08lX at %p on guest thread %X", r->ExceptionCode, r->ExceptionAddress, t->id);
++        // module and offset, for tools/addr2func.py (the game code DLL's exports name the recompiled functions)
++        HMODULE mod = nullptr;
++        wchar_t mod_name[MAX_PATH] = {};
++        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                               static_cast<LPCWSTR>(r->ExceptionAddress), &mod) &&
++            GetModuleFileNameW(mod, mod_name, MAX_PATH)) {
++            const wchar_t* leaf = wcsrchr(mod_name, L'\\');
++            LOGE("  in %ls+%llX", leaf ? leaf + 1 : mod_name,
++                 (unsigned long long)(static_cast<uint8_t*>(r->ExceptionAddress) - reinterpret_cast<uint8_t*>(mod)));
++        }
+         if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters >= 2) {
+             uint64_t va = r->ExceptionInformation[1], g = uint64_t(reinterpret_cast<uintptr_t>(kernel::g_base));
+             LOGE("  %s %llX, guest %08llX", r->ExceptionInformation[0] ? "write" : "read", (unsigned long long)va,
+@@ -73,7 +83,7 @@ void DumpThreads() {
      for (auto& t : kernel::Threads())
          if (t->ctx) {
              LOGI("thread %X", t->id);
@@ -1449,7 +1466,7 @@ index 0000000..fd6c418
 +
 +}  // namespace gpu::ui_upscale
 diff --git a/runtime/kernel/files.cpp b/runtime/kernel/files.cpp
-index f44b26d..dc31a9c 100644
+index f44b26d..4d07253 100644
 --- a/runtime/kernel/files.cpp
 +++ b/runtime/kernel/files.cpp
 @@ -78,6 +78,7 @@ struct File : Object {
@@ -1460,22 +1477,30 @@ index f44b26d..dc31a9c 100644
      std::mutex io;  // threads sharing a handle: seek and transfer stay together
      File() : Object(ObjType::File) {}
      ~File() override {
-@@ -301,6 +302,7 @@ uint32_t OpenOnDisc(const Disc::Entry* e, const std::string& name, uint32_t hand
+@@ -301,9 +302,10 @@ uint32_t OpenOnDisc(const Disc::Entry* e, const std::string& name, uint32_t hand
      f->xbox = Normalize(name);
      f->entry = e;
      f->dir = e->dir;
 +    f->async = !(options & 0x30);
      W32(handle_out, NewHandle(f));
      IoStatus(iosb, kSuccess, 1);
-     LOG_FIRST(400, "open %s", name.c_str());
-@@ -424,6 +426,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
+-    LOG_FIRST(400, "open %s", name.c_str());
++    LOG_FIRST(400, "open %s (options %X)", name.c_str(), options);
+     return kSuccess;
+ }
+ 
+@@ -424,9 +426,10 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
      f->xbox = Normalize(name);
      f->fp = fp;
      f->delete_on_close = options & 0x1000;  // FILE_DELETE_ON_CLOSE
 +    f->async = !(options & 0x30);
      W32(handle_out, NewHandle(f));
      IoStatus(iosb, kSuccess, info);
-     LOG_FIRST(400, "open %s", name.c_str());
+-    LOG_FIRST(400, "open %s", name.c_str());
++    LOG_FIRST(400, "open %s (options %X)", name.c_str(), options);
+     return kSuccess;
+ }
+ 
 @@ -453,7 +456,7 @@ KERNEL_EXPORT(202, NtOpenFile, 6) {
          if (!f->fp) f->fp = std::fopen(host.c_str(), "rb");
          if (!f->fp) return kAccessDenied;

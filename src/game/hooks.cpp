@@ -7,9 +7,13 @@
 //     __imp__sub_00012345(ctx, base);  // the original
 // }
 #include <cstdint>
+#include <atomic>
+#include <cstdio>
 
 #include "app/app.h"
 #include "core/log.h"
+#include "kernel/kernel.h"
 
 #include "xdk/hle.h"
+
 

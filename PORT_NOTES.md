@@ -93,3 +93,38 @@ planned. To check: whether this PAL title accepts the NTSC-M/60 Hz report and wh
 - After the title screen the game shows its own language choice (flags: Spanish, English, Italian, ...; English lit
   with XC_LANGUAGE 1), then PROFILE MANAGEMENT (New/Load/Save/Delete Profile). B on that menu goes back to the title:
   a profile is required. `tools/ap_to_title.sh` skips the intro movies with A, checking the title text by pixels.
+
+## Profile, test scripts, the track selection crash (2026-11-12)
+
+- Test profile: none existed, so one profile "PLAYER" was made on purpose (New Profile, default name, no skill
+  points) and saved (Profile Management > Save Profile > first slot): `hdd/E/UDATA/4c530002/A783C6F6400F`
+  (savedata.dat, SaveMeta.xbx); `13AE7C41BB63` holds the game's settings.dat. Backups in `out/save_backups/`.
+- Scripts: `tools/ap_to_title.sh` (intro movies skipped with A, title text checked by pixels), `tools/ap_to_main.sh`
+  (START, language English, Load Profile, first slot), `tools/ap_to_tracksel.sh` (Instant Action, Laguna Seca lit).
+  `tools/checkpx.ps1 -Mode yellow` checks SCAR's lit menu lines. PROFILE MANAGEMENT starts with the cursor on no
+  visible line when a save exists: up, up = New Profile, down = Load Profile.
+- Crash logs now name the module and offset (`in SCAR.dll+561CE3`, sdk main.cpp); `tools/addr2func.py` maps it to
+  the recompiled function.
+- Save times show UTC (20:45 for a 23:45 local save): the runtime's clock, to look at later.
+- **Crash ~2 s after entering TRACK SELECTION (null read at guest 0x50 in 0x16C480)**, how it was traced with TEMP hooks:
+  - 0x16C480 sets the filter of a sprite's texture [obj+0x68]; the sprite (vtable 0x2CFD78, made by 0xD0030 ->
+    0x16CCA0(id)) has none: the texture lookup by sprite id 0x168EB0 failed for id **A9504859 = laguna_big_02**
+    (iconsTrackSelBig.lib in GfxPak.mix, a TXT1 text resource list; its 88 textures are bStatic 0, loaded on demand).
+  - The id comes from a 21 frame animation table (0x4EFF0: [obj+0x14] entries of (key, sprite id), index [obj+0x0C]):
+    the track preview slideshow, frame 2.
+  - On demand load: 0x194900 -> 0xA7EF0("IS_TrkSelBig_Laguna02") -> RwStreamRead (0xAAC70) of the chunk header gets 0
+    bytes: RW errors 5 (end of stream), 0x8000001A, 0x16. Laguna01 loaded at screen entry; Laguna02 fails.
+  - The txd is a virtual file inside GfxPak.mix (read function 0x1013F0, mode [f+0x44]) whose position is already
+    at its size (0x80A8) when read; its data comes through a second, asynchronous GfxPak.mix handle (options 0x48 =
+    FILE_NO_INTERMEDIATE_BUFFERING | NON_DIRECTORY, the .mix files are otherwise opened with 0x60 = synchronous)
+    that a prefetcher (0xE6464, 0xE6D49) reads in 32 KiB chunks with OVERLAPPED.
+  - With g_pending_async_io those reads return STATUS_PENDING (data already there, ov.InternalHigh 0x8000); the
+    stream's poller (device +0x3C = 0x1D9370, called from 0x1D8B7B and 0x1D94C3) backs off (mode [s+0x28] 2, 4, 5)
+    and calls GetOverlappedResult (0x92708) only at mode 5, so each chunk takes about 3 frames, and the prefetcher
+    keeps refilling the same window (0x980000..0x9B0000). Open question: why the virtual file sees its end instead
+    of waiting for the prefetched data.
+  - `SCAR_NOPENDING=1` (game_info.cpp) turns pending off for comparison: then the boot deadlocks again right after
+    the intro (opening Music/XBOX/M2.rws, also an async 0x48 file), so pending is needed for the music stream.
+  - Next: find how the virtual file (0x1013F0 / 0x100C10, mode 2) waits for the prefetcher, and make completion
+    visible the way the console does (likely: report completion of a finished read on the first poll, or complete
+    on a worker thread a little later instead of at once).

@@ -4,6 +4,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <cstdlib>
 
 #include <toml++/toml.hpp>
 
@@ -39,7 +40,8 @@ void Save(void* table) { SavePadMap(table); }
 
 // before the window and boot: guest threads on one core, the autopilot if SCAR_AUTOPILOT is set
 void Init() {
-    kernel::g_pending_async_io = true;  // overlapped reads return STATUS_PENDING, as on the console
+    // overlapped reads return STATUS_PENDING, as on the console; SCAR_NOPENDING=1 turns it off (comparison runs)
+    kernel::g_pending_async_io = !std::getenv("SCAR_NOPENDING");
     PinGuestThreads();
     StartAutopilot();
     StartWatch();
