@@ -151,8 +151,8 @@ planned. To check: whether this PAL title accepts the NTSC-M/60 Hz report and wh
   the boot still deadlocks after the intro (`SCAR_NOPENDING=1`).
 - **Race reached and driven** (autopilot only): Instant Action > Laguna Seca > Alfa 147 (first car) > race with 7
   AI cars, HUD (position, lap, timer, rev counter, gear, km/h) drawn right. Right trigger accelerates, the left stick
-  steers (turned the car around: "WRONG WAY!"). The gearbox stays in 1st (manual gears by default?), to look at with
-  the controls.
+  steers (turned the car around: "WRONG WAY!"). The gearbox stayed in 1st only because the test never reached the
+  shift point (see the test tools notes).
 - **Game speed**: the race timer runs at real time (11.52 s in 11.51 s of wall time). Full throttle for 5 s from
   the green light gives the same place and speed (49-50 km/h, rev limit in 1st) at fps_cap 60 and 30, so the
   simulation is time based, not frame based. The runtime presents at 60 fps with a 60 Hz vertical blank while the
@@ -168,8 +168,9 @@ planned. To check: whether this PAL title accepts the NTSC-M/60 Hz report and wh
 - Autopilot: `trigger <lt|rt|a|b|x|y|black|white> <0..1> <seconds>` presses an analog button part way (merged with a
   real controller by taking the larger value), `release` drops everything still held.
 - Seen with it (race start, Alfa 147): rt 0.3 for 3 s -> 4 km/h with the gear shown as N; full rt for 2 s more ->
-  24 km/h in 1st; lt 0.5 for 2 s -> 11 km/h, N again. A light throttle does not engage a gear: a threshold or a
-  dead zone in the game's throttle, to look at in the controls step (with the real trigger curve).
+  24 km/h in 1st; lt 0.5 for 2 s -> 11 km/h. Not a fault (user, 2026-11-12): the automatic gearbox shifts up only near
+  the red line (about 7000 rpm for the 147), which the short test presses never reached; "Auto Transmission" is On in
+  Options > Driving Help. The user played with a real gamepad: all buttons and the triggers work.
 - A play session by the user (8 minutes, real controller) logged no error and exited cleanly.
 - Decided: no steering wheel support; controls are gamepad (SDL3) and keyboard.
 
