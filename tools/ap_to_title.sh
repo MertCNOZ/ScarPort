@@ -5,7 +5,7 @@
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 px() { powershell -ExecutionPolicy Bypass -File "$ROOT/tools/checkpx.ps1" -Src "$ROOT/out/ap/snaps/$1.png" -X "$2" -Y "$3" -W "$4" -H "$5" -Mode "$6"; }
-for i in $(seq 1 40); do
+for i in $(seq 1 12); do  # 5 intro movies; never more presses than that needs
     bash "$ROOT/tools/ap.sh" shot title > /dev/null
     v=$(px title 330 790 620 45 yellow)
     if awk "BEGIN{exit !($v > 0.03)}"; then echo "title screen"; exit 0; fi

@@ -367,7 +367,7 @@ index 7e6507d..b72ef2d 100644
      va_list ap;
      va_start(ap, fmt);
 diff --git a/runtime/gpu/d3d12.cpp b/runtime/gpu/d3d12.cpp
-index 3f9d4e7..4fed2ec 100644
+index 3f9d4e7..9b165ac 100644
 --- a/runtime/gpu/d3d12.cpp
 +++ b/runtime/gpu/d3d12.cpp
 @@ -13,6 +13,7 @@
@@ -613,7 +613,20 @@ index 3f9d4e7..4fed2ec 100644
  }
  
  void D3D12Backend::KeyDepthStencil(const State& s, const Assembled& a, PsoKey& k) {
-@@ -2527,9 +2626,106 @@ void D3D12Backend::CaptureDraw(const State& s, uint32_t prim, uint32_t count, co
+@@ -2329,6 +2428,12 @@ void FillTransformConstants(const State& s, GuestExtent size, DrawConstants& c)
+     float vpm[16] = {sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, v.max_z - v.min_z, 0, ox, oy, v.min_z, 1};
+     float full[16];
+     MatMul(wvp, vpm, full);
++    // a 2D layer drawn narrower about the centre on a widened view (hud.xy, set by Draw; 1 otherwise)
++    if (!(!(s.vs_handle & 1) && (s.vs_handle & 0xE) == 0x4))  // not XYZRHW
++        for (int r = 0; r < 4; r++) {
++            full[r * 4 + 0] *= c.hud[0];
++            full[r * 4 + 1] *= c.hud[1];
++        }
+     Transpose(full, c.wvp);
+     Transpose(wv, c.wv);
+     // normals take the inverse transpose of the upper 3x3
+@@ -2527,9 +2632,144 @@ void D3D12Backend::CaptureDraw(const State& s, uint32_t prim, uint32_t count, co
      CaptureTextures(s, stages);
  }
  
@@ -654,6 +667,44 @@ index 3f9d4e7..4fed2ec 100644
 +
 +// the least and greatest x of the vertices a screen space draw uses, from its raw XYZRHW positions; false when
 +// they cannot be read (the converted path, or a position outside the buffer)
++// the x extent in normalized device coordinates of a draw's untransformed positions under m (row vectors, w = 1:
++// an orthographic transform, as the 2D layers of RenderWare titles draw with)
++bool NdcSpanX(const Assembled& a, const float* m, float& lo, float& hi) {
++    auto add = [&](float x, float y, float z) {
++        float nx = x * m[0] + y * m[4] + z * m[8] + m[12];
++        lo = std::min(lo, nx);
++        hi = std::max(hi, nx);
++    };
++    lo = 1e30f;
++    hi = -1e30f;
++    if (!a.vertices.empty()) {
++        uint32_t regs = uint32_t(std::popcount(a.regs));
++        if (!(a.regs & 1) || !regs || !a.vertex_count || a.vertices.size() < size_t(a.vertex_count) * regs * 4) return false;
++        for (uint32_t v = 0; v < a.vertex_count; v++) {
++            const float* p = &a.vertices[size_t(v) * regs * 4];
++            add(p[0], p[1], p[2]);
++        }
++        return true;
++    }
++    const VertexElement& e = a.elements[0];
++    if (e.buffer >= a.buffer_count) return false;
++    const VertexBuffer& vb = a.buffers[e.buffer];
++    if (!vb.src || !vb.stride) return false;
++    uint32_t n = a.index_count ? a.index_count : a.draw_count;
++    if (!n || n > 4096) return false;
++    for (uint32_t i = 0; i < n; i++) {
++        uint32_t idx = i;
++        if (a.index_src && a.index_count)
++            idx = a.index16 ? static_cast<const uint16_t*>(a.index_src)[i] : static_cast<const uint32_t*>(a.index_src)[i];
++        int64_t v = int64_t(idx) + a.base_vertex;
++        if (v < 0 || uint64_t(v) * vb.stride + e.offset + 12 > vb.bytes) return false;
++        float xyz[3];
++        std::memcpy(xyz, vb.src + v * vb.stride + e.offset, 12);
++        add(xyz[0], xyz[1], xyz[2]);
++    }
++    return true;
++}
++
 +bool ScreenSpanX(const Assembled& a, float& lo, float& hi, float* zmax = nullptr) {
 +    if (!a.vertices.empty()) {
 +        // the converted copy: float4 per present register, the position (v0) first
@@ -721,7 +772,7 @@ index 3f9d4e7..4fed2ec 100644
      fputc('\n', cap_);
  }
  
-@@ -2628,16 +2824,19 @@ void D3D12Backend::SetViewportScissor(const State& s, uint32_t gw) {
+@@ -2628,16 +2868,19 @@ void D3D12Backend::SetViewportScissor(const State& s, uint32_t gw) {
      float W = float(bound_rt_ ? bound_rt_->w : bound_ds_->w);
      float H = float(bound_rt_ ? bound_rt_->h : bound_ds_->h);
      D3D12_VIEWPORT vp{0, 0, W, H, 0, 1};
@@ -745,7 +796,7 @@ index 3f9d4e7..4fed2ec 100644
      }
      D3D12_RECT rect{std::clamp<LONG>(x0, 0, LONG(W)), std::clamp<LONG>(y0, 0, LONG(H)),
                      std::clamp<LONG>(x1, 0, LONG(W)), std::clamp<LONG>(y1, 0, LONG(H))};
-@@ -2834,6 +3033,8 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
+@@ -2834,6 +3077,8 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
  
      // stage textures, then the pixel shader made for them
      DrawTextures stages;
@@ -754,7 +805,7 @@ index 3f9d4e7..4fed2ec 100644
      if (!BindStageTexturesAndTargets(s, stages)) return;
      PixelKey pk = MakePixelKey(s, stages.info);
      pk.quad = sh.quad;
-@@ -2855,6 +3056,25 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
+@@ -2855,6 +3100,40 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
      GuestExtent size;
      SurfaceSize(bound_rt_ ? s.rt : s.zs, size.w, size.h);
      DrawConstants c{};
@@ -773,6 +824,21 @@ index 3f9d4e7..4fed2ec 100644
 +            c.hud[1] = 1.0f / fov;
 +        }
 +    }
++    // the same for the fixed function's 2D layers (RenderWare's Im2D, its fonts): untransformed positions under an
++    // orthographic projection on the main target, narrower than 90% of the screen
++    if (!a.pretransformed && !(s.vs_handle & 1) && size.w == guest_w_ && size.h == guest_h_) {
++        const float* p = s.transforms[kTsProjection].data();
++        float wide = app::WideFactor(), fov = float(std::clamp(app::Get().fov, 70u, 120u)) / 100.0f, lo = 0, hi = 0;
++        if (p[3] == 0 && p[7] == 0 && p[11] == 0 && p[15] == 1 && (wide > 1.01f || std::fabs(fov - 1) > 1e-3f)) {
++            float wv[16], wvp[16];
++            MatMul(s.transforms[kTsWorld].data(), s.transforms[kTsView].data(), wv);
++            MatMul(wv, p, wvp);
++            if (NdcSpanX(a, wvp, lo, hi) && hi - lo < 0.9f * 2.0f) {
++                c.hud[0] = 1.0f / (wide * fov);
++                c.hud[1] = 1.0f / fov;
++            }
++        }
++    }
 +    if (movie_draw_ && a.pretransformed) {
 +        c.hud[0] = movie_sx_;
 +        c.hud[1] = movie_sy_;
@@ -780,7 +846,7 @@ index 3f9d4e7..4fed2ec 100644
      UploadConstants(s, sh, k, stages, size, c);
      if (ext_) binds_ = {};
  
-@@ -2877,9 +3097,9 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
+@@ -2877,9 +3156,9 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
  
  // a guest rect scaled to the target and clamped to it
  D3D12_RECT ScaledRect(const Target& t, int x0, int y0, int x1, int y1) {
@@ -793,7 +859,7 @@ index 3f9d4e7..4fed2ec 100644
  }
  
  // rs: the rects buffer, reused across targets
-@@ -3055,8 +3275,8 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
+@@ -3055,8 +3334,8 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
      D3D12_CPU_DESCRIPTOR_HANDLE rh = Cpu(rtv_heap_.Get(), dst_t.view, rtv_inc_);
      cl_->OMSetRenderTargets(1, &rh, FALSE, nullptr);
      float gw = src_t.gw * l.kx, gh = src_t.gh * l.ky;  // the source in the guest pixels the rects use
@@ -804,7 +870,7 @@ index 3f9d4e7..4fed2ec 100644
      bool listed = l.count && l.src_rects;
      uint32_t n = listed ? l.count : 1;
      for (uint32_t i = 0; i < n; i++) {
-@@ -3065,7 +3285,7 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
+@@ -3065,7 +3344,7 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
          DrawnRect r{.x0 = 0, .y0 = 0, .x1 = whole_w, .y1 = whole_h};
          if (listed) r = ReadDrawnRect(l.src_rects, l.dst_points, i);
          if (r.x1 <= r.x0 || r.y1 <= r.y0) continue;
@@ -813,7 +879,7 @@ index 3f9d4e7..4fed2ec 100644
                            0, 1};
          LONG right = std::min(LONG(vp.TopLeftX + vp.Width), LONG(dst_t.w));
          LONG bottom = std::min(LONG(vp.TopLeftY + vp.Height), LONG(dst_t.h));
-@@ -3075,7 +3295,7 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
+@@ -3075,7 +3354,7 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
          cl_->RSSetScissorRects(1, &scissor);
          binds_ = {};
          float uv[4] = {r.x0 / gw, r.y0 / gh, (r.x1 - r.x0) / gw, (r.y1 - r.y0) / gh};
@@ -822,7 +888,7 @@ index 3f9d4e7..4fed2ec 100644
          float mul = 1 / dst_t.range;
          BlitOptions o{.alpha = true, .taps = taps, .mul = mul, .rtv = dst_t.fmt};
          Blit(src_res, src_t.fmt, uv, o);
-@@ -3091,7 +3311,7 @@ void D3D12Backend::CopyByRegion(const Target& src_t, ID3D12Resource* src_res, D3
+@@ -3091,7 +3370,7 @@ void D3D12Backend::CopyByRegion(const Target& src_t, ID3D12Resource* src_res, D3
      Transition(dst_t.res.Get(), dst_t.state, D3D12_RESOURCE_STATE_COPY_DEST);
      D3D12_TEXTURE_COPY_LOCATION dl{dst_t.res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
      D3D12_TEXTURE_COPY_LOCATION sl{src_res, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
@@ -831,7 +897,7 @@ index 3f9d4e7..4fed2ec 100644
      bool listed = l.count && l.src_rects;
      uint32_t n = listed ? l.count : 1;
      for (uint32_t i = 0; i < n; i++) {
-@@ -3101,15 +3321,15 @@ void D3D12Backend::CopyByRegion(const Target& src_t, ID3D12Resource* src_res, D3
+@@ -3101,15 +3380,15 @@ void D3D12Backend::CopyByRegion(const Target& src_t, ID3D12Resource* src_res, D3
          if (listed) {
              GuestRect r = ReadGuestRect(l.src_rects, i);
              b.left = ScaleUnsigned(r.left, dst_scale);
@@ -850,7 +916,7 @@ index 3f9d4e7..4fed2ec 100644
              }
          }
          if (b.right <= b.left || b.bottom <= b.top || dx >= dst_t.w || dy >= dst_t.h) continue;
-@@ -3230,10 +3450,56 @@ void D3D12Backend::UploadGammaRamp() {
+@@ -3230,10 +3509,56 @@ void D3D12Backend::UploadGammaRamp() {
      cl_->CopyTextureRegion(&dl, 0, 0, 0, &sl, nullptr);
  }
  
@@ -910,7 +976,7 @@ index 3f9d4e7..4fed2ec 100644
      float w = float(bb_w_);
      float h = float(bb_h_);
      float vw = std::min(w, h * aspect);
-@@ -3245,7 +3511,8 @@ void D3D12Backend::BlitFrame(Target& t) {
+@@ -3245,7 +3570,8 @@ void D3D12Backend::BlitFrame(Target& t) {
      cl_->RSSetScissorRects(1, &scissor);
      binds_ = {};
      Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -920,7 +986,7 @@ index 3f9d4e7..4fed2ec 100644
  }
  
  void D3D12Backend::RenderUi() {
-@@ -3324,12 +3591,12 @@ void LogPerf() {
+@@ -3324,12 +3650,12 @@ void LogPerf() {
          Perf& p = g_perf;
          double n = double(perf_frames);
          double host = p.draw + p.clear + p.copy + p.present + p.sync;
@@ -935,7 +1001,7 @@ index 3f9d4e7..4fed2ec 100644
               "resource %.2f fence %.2f flush %.2f copy %.2f, next frame %.2f) | read-backs waited for: %.1f lock, "
               "%.1f NOOVERWRITE",
               g_perf_capture_ns.exchange(0) / n / 1e6, g_perf_wait_ns.exchange(0) / n / 1e6,
-@@ -3338,7 +3605,7 @@ void LogPerf() {
+@@ -3338,7 +3664,7 @@ void LogPerf() {
               g_perf_wait_kind_ns[3].exchange(0) / n / 1e6, g_perf_wait_kind_ns[4].exchange(0) / n / 1e6,
               g_perf_wait_kind_ns[5].exchange(0) / n / 1e6, g_perf_sync_block.exchange(0) / n,
               g_perf_sync_late.exchange(0) / n);
@@ -944,7 +1010,7 @@ index 3f9d4e7..4fed2ec 100644
               "hashed | %.1f tex uploads %.2f MB, %.1f new tex, %.1f new targets, %.1f target uploads, %.1f shrinks, "
               "%.1f read-backs %.1f late | %llu shaders %llu psos this second",
               p.draws / n, p.raw / n, p.verts / n / 1000.0, p.upload / n / 1048576.0, p.overflow / n, p.sigs / n,
-@@ -3394,12 +3661,14 @@ void D3D12Backend::WaitGpuFrame(uint64_t n) {
+@@ -3394,12 +3720,14 @@ void D3D12Backend::WaitGpuFrame(uint64_t n) {
  void D3D12Backend::ApplySettings() {
      if (texturedumper::Update()) ReleasePackTextures();
      float want = app::RenderScale(guest_h_);
