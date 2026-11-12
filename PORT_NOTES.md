@@ -209,3 +209,4 @@ planned. To check: whether this PAL title accepts the NTSC-M/60 Hz report and wh
 - Movie colours: sampled 123 intro frames, Y mostly 16..235 (a few 0/246 overshoots): XMV output is studio range,
   so the runtime's BT.601 studio range YUY2 conversion is right; the bright look is the intro's own white.
 - Checked after these changes: 4:3 (1280x960) and 16:9 (1600x900) both reach the race with no error.
+- Decided (user): menu background movies stay 4:3 with side bars on a widened view (no zoom to fill).
