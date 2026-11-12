@@ -159,3 +159,16 @@ planned. To check: whether this PAL title accepts the NTSC-M/60 Hz report and wh
   game asked for a 50 Hz (PAL) mode; that does not change the game's speed.
 - Tests: `tools/ap_race_accel.sh` (from track selection into the race, 5 s full throttle, HUD crops by
   `tools/crop_hud.ps1`).
+
+## Test tools round two (2026-11-12)
+
+- `tools/backup_saves.sh [label]`: saves to `out/save_backups/<date>_<time>[_label]`, keeps the newest 20 it made.
+- `tools/ap_to_race.sh`: one command from nothing to the green light (backup, start with autopilot, intro, Load
+  Profile, Instant Action, Laguna Seca, first car); refuses to run while a SCAR.exe is open (the player's).
+- Autopilot: `trigger <lt|rt|a|b|x|y|black|white> <0..1> <seconds>` presses an analog button part way (merged with a
+  real controller by taking the larger value), `release` drops everything still held.
+- Seen with it (race start, Alfa 147): rt 0.3 for 3 s -> 4 km/h with the gear shown as N; full rt for 2 s more ->
+  24 km/h in 1st; lt 0.5 for 2 s -> 11 km/h, N again. A light throttle does not engage a gear: a threshold or a
+  dead zone in the game's throttle, to look at in the controls step (with the real trigger curve).
+- A play session by the user (8 minutes, real controller) logged no error and exited cleanly.
+- Decided: no steering wheel support; controls are gamepad (SDL3) and keyboard.

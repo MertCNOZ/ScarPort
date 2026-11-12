@@ -5,6 +5,8 @@
 //   press <button> [seconds]           tap a button, 0.15 s by default
 //   hold <button> <seconds>            hold it
 //   stick <l|r> <x> <y> <seconds>      tilt a stick, x and y from -1 to 1, y up
+//   trigger <button> <0..1> <seconds>  press an analog button part way: lt (brake) / rt (throttle) at 0.5 = half
+//   release                            drop every press, hold, stick and trigger still running
 //   capture                            save the next frame under XBE_CAPTURE_DIR (as F3 does)
 //   find <text>                        log where the text is in guest memory, as ASCII and UTF-16
 //   peek <hex address> [bytes]         log guest memory there
@@ -56,6 +58,7 @@ using Clock = std::chrono::steady_clock;
 
 struct Action {
     int kind;  // 0 digital mask, 1 analog index, 2 stick
+    float amount = 1;  // analog buttons: 0..1
     uint16_t mask = 0;
     int index = 0;
     float x = 0, y = 0;
@@ -387,6 +390,17 @@ std::string Run(const std::string& line) {
         a.x = std::clamp(a.x, -1.0f, 1.0f);
         a.y = std::clamp(a.y, -1.0f, 1.0f);
         a.until = Clock::now() + std::chrono::milliseconds(int(seconds * 1000));
+    } else if (cmd == "trigger") {
+        std::string b;
+        float amount = 1, seconds = 0;
+        in >> b >> amount >> seconds;
+        if (!Button(b, a) || a.kind != 1) return "error: not an analog button " + b;
+        a.amount = std::clamp(amount, 0.0f, 1.0f);
+        a.until = Clock::now() + std::chrono::milliseconds(int(seconds * 1000));
+    } else if (cmd == "release") {
+        std::lock_guard lock(g_lock);
+        g_actions.clear();
+        return "ok release";
     } else if (cmd == "capture") {
         gpu::g_capture = true;
         return "ok capture";
@@ -471,7 +485,7 @@ void AutopilotPad(int port, input::Pad& pad) {
                     g_actions.end());
     for (const Action& a : g_actions) {
         if (a.kind == 0) pad.buttons |= a.mask;
-        if (a.kind == 1) pad.analog[a.index] = 0xFF;
+        if (a.kind == 1) pad.analog[a.index] = std::max<uint8_t>(pad.analog[a.index], uint8_t(a.amount * 255.0f + 0.5f));
         if (a.kind == 2) {
             int16_t x = int16_t(a.x * 32767), y = int16_t(a.y * 32767);
             if (a.index == 0) pad.lx = x, pad.ly = y;
