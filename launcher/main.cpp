@@ -1081,6 +1081,14 @@ void PollCapture(Ui& ui) {
 
 void PageControls(Ui& ui) {
     PageTitle("CONTROLS", "Gamepad mapping and controllers.");
+    Heading("BUTTON ICONS");
+    Row("In-game button icons");
+    {
+        int cur = ui.s.texture_packs.find("modern_buttons") != std::string::npos ? 0 : 1;
+        if (Combo("##icons", &cur, {"Modern Xbox", "Original Xbox"})) ui.s.texture_packs = cur == 0 ? "modern_buttons" : "";
+    }
+    Desc("Modern Xbox shows today's controller buttons for A, B, X and Y in the game's menus and prompts, drawn sharp "
+         "for high resolutions over the game's own icons. Applied when the game starts.");
     Heading("VIBRATION");
     Row("Vibration");
     Slider("##rumble", &ui.s.rumble, 0, 100, 5, "%d%%");

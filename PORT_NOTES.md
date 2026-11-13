@@ -267,3 +267,22 @@ planned. To check: whether this PAL title accepts the NTSC-M/60 Hz report and wh
 - The pause menu (the 2D layer) stays in the middle. Setting `hud_edges` (on by default; launcher: Graphics, Text and
   HUD, "HUD at the screen edges"). Checked at 1920x1080: position and lap top left, best and last top right, track
   map left, speedometer bottom left, timer in the middle; with hud_edges = false all as before.
+
+## Modern Xbox button icons: overlays on the menu atlases (2026-11-13)
+
+- The game's A/B/X/Y icons are coloured gems (18x23 texels, two of each per atlas, normal and lit) inside the menu
+  atlases, beside PlayStation icons, PC key caps and other menu art (512x128 b17b1f7c7bdae1f0, f21ef600f853b196;
+  512x256 fa4e4282afbc6613; 512x512 9bb686564c6f0e2c, de07cd17538dd95b, keys from a texture dump of the menus,
+  track and car selection and a race). Replacing the whole atlas would ship the game's art.
+- SDK texture packs take overlays: `<size>_<key>_overlay.png`. texturedumper::Overlay (called from LatchPackKey for
+  every texture, not only screen space ones) makes the player's own texture (its ui_upscale copy when that is on,
+  else bilinear) at the overlay's size and keeps the overlay's pixel wherever its alpha is not 0; alpha 1/255 pixels
+  clear what is under them. The result is handed out by Take like an upscaled copy.
+- tools/find_button_gems.ps1 finds the gems in dumps (connected solid patches, saturated, by hue; boxes 17-19 wide
+  are the gems, smaller hits are font digits). tools/make_button_icons.ps1 (rewritten from IndyPort's, same Face
+  drawing) writes one overlay per atlas at 4x: each gem's box plus 1 texel cleared (GDI+ needs SourceCopy for the
+  alpha 1 fill, blending turned it into 0) and a dark round button with the coloured letter drawn in it. CMake's
+  texture_packs target copies packs/ to textures/packs; texture_packs defaults to modern_buttons when the settings
+  file has no key; launcher Controls, Button icons: Modern Xbox / Original Xbox.
+- Checked: track selection and main menu prompts show the new A and B buttons, no gem left around them. Atlases of
+  screens not dumped yet (options, results, multiplayer) keep their gems until their boxes are added.

@@ -304,6 +304,7 @@ T = [
     ('Back', 'Back', 'Back'),
     ('HUD at the screen edges', 'HUD ekran kenarlarında', 'Интерфейс по краям экрана'),
     ('In widescreen the race HUD (speedometer, position, lap times, track map) moves to the edges of the screen, as on a 4:3 TV. Off keeps it in the 4:3 area in the middle. Menus always stay in the middle.', "Geniş ekranda yarış HUD'u (hız göstergesi, sıralama, tur süreleri, pist haritası) 4:3 bir televizyondaki gibi ekranın kenarlarına taşınır. Kapalıyken ortadaki 4:3 alanda kalır. Menüler her zaman ortada kalır.", 'В широкоэкранном режиме интерфейс гонки (спидометр, позиция, время кругов, карта трассы) уходит к краям экрана, как на телевизоре 4:3. Выключено: остаётся в области 4:3 посередине. Меню всегда остаются посередине.'),
+    ("Modern Xbox shows today's controller buttons for A, B, X and Y in the game's menus and prompts, drawn sharp for high resolutions over the game's own icons. Applied when the game starts.", 'Modern Xbox, oyunun menülerinde ve uyarılarında A, B, X ve Y için bugünkü kontrolcünün tuşlarını, yüksek çözünürlükler için keskin çizilmiş olarak oyunun kendi simgelerinin üzerine gösterir. Oyun başlarken uygulanır.', 'Modern Xbox показывает кнопки A, B, X и Y современного контроллера в меню и подсказках игры, чётко нарисованные для высоких разрешений поверх собственных значков игры. Применяется при запуске игры.'),
 ]
 
 

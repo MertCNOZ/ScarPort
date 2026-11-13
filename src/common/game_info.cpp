@@ -40,6 +40,9 @@ void Rumble(int, uint16_t& left, uint16_t& right) {
 void Load(const void* table) {
     LoadPadMap(table);
     if (!static_cast<const toml::table*>(table)->contains("tv_standard")) app::Get().tv_standard = 1;
+    // the modern button icons (packs/modern_buttons, overlays drawn on the player's own menu atlases) unless the file
+    // says otherwise
+    if (!static_cast<const toml::table*>(table)->contains("texture_packs")) app::Get().texture_packs = "modern_buttons";
 }
 void Save(void* table) { SavePadMap(table); }
 

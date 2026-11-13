@@ -370,7 +370,7 @@ index 7e6507d..b72ef2d 100644
      va_list ap;
      va_start(ap, fmt);
 diff --git a/runtime/gpu/d3d12.cpp b/runtime/gpu/d3d12.cpp
-index 3f9d4e7..ebd4e0f 100644
+index 3f9d4e7..a36cdac 100644
 --- a/runtime/gpu/d3d12.cpp
 +++ b/runtime/gpu/d3d12.cpp
 @@ -13,6 +13,7 @@
@@ -615,15 +615,16 @@ index 3f9d4e7..ebd4e0f 100644
      if (tx.pack_gen != texturedumper::Generation()) LatchPackKey(tx, d, fi, colours);
      if (tx.pack_key) LatchPackImage(tx);
      const Tex& drawn = tx.swap ? *tx.swap : tx;
-@@ -1892,6 +1999,7 @@ void D3D12Backend::LatchPackKey(Tex& tx, const TextureDesc& d, const FormatInfo&
+@@ -1892,6 +1999,8 @@ void D3D12Backend::LatchPackKey(Tex& tx, const TextureDesc& d, const FormatInfo&
      texturedumper::Dump(key, d, p, colours);
      // dumping alone keys the bytes too: the pack image is not drawn then
      tx.pack_key = texturedumper::Replacing() ? key : 0;
-+    if (tx.screen && texturedumper::Upscale(key, d, p, colours)) tx.pack_key = key;
++    if (texturedumper::Overlay(key, d, p, colours) || (tx.screen && texturedumper::Upscale(key, d, p, colours)))
++        tx.pack_key = key;
  }
  
  // the pack image for tx's bytes once it has loaded; textures with the same bytes share its GPU copy
-@@ -1952,6 +2060,13 @@ ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, DrawTexture
+@@ -1952,6 +2061,13 @@ ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, DrawTexture
      const FormatInfo& fi = Format(d.format);
      info.kind = TextureKind(d);
      info.rect = d.linear;
@@ -637,7 +638,7 @@ index 3f9d4e7..ebd4e0f 100644
  
      // rendered by the GPU: sample the target itself; DXT data loaded over a target's memory is not it
      uint64_t alt = 0;
-@@ -1961,9 +2076,94 @@ ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, DrawTexture
+@@ -1961,9 +2077,94 @@ ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, DrawTexture
      if (tit != targets_.end() && !d.cube && d.depth == 1 && !fi.compressed) {
          return BindTargetTexture(s, stage, d, tit->second, box, stages);
      }
@@ -732,7 +733,7 @@ index 3f9d4e7..ebd4e0f 100644
  // D3DTEXF: 1 point, 2 linear, 3 anisotropic
  constexpr uint32_t kTexfLinear = 2;
  constexpr uint32_t kTexfAnisotropic = 3;
-@@ -2151,7 +2351,7 @@ bool OffsetsPolygons(const State& s, Topology topology) {
+@@ -2151,7 +2352,7 @@ bool OffsetsPolygons(const State& s, Topology topology) {
  
  // polygon offset slopes are per console pixel, an upscaled target's pixels are smaller
  float HostSlopeScale(const State& s, const Target* ds) {
@@ -741,7 +742,7 @@ index 3f9d4e7..ebd4e0f 100644
  }
  
  void D3D12Backend::KeyDepthStencil(const State& s, const Assembled& a, PsoKey& k) {
-@@ -2329,6 +2529,13 @@ void FillTransformConstants(const State& s, GuestExtent size, DrawConstants& c)
+@@ -2329,6 +2530,13 @@ void FillTransformConstants(const State& s, GuestExtent size, DrawConstants& c)
      float vpm[16] = {sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, v.max_z - v.min_z, 0, ox, oy, v.min_z, 1};
      float full[16];
      MatMul(wvp, vpm, full);
@@ -755,7 +756,7 @@ index 3f9d4e7..ebd4e0f 100644
      Transpose(full, c.wvp);
      Transpose(wv, c.wv);
      // normals take the inverse transpose of the upper 3x3
-@@ -2527,9 +2734,146 @@ void D3D12Backend::CaptureDraw(const State& s, uint32_t prim, uint32_t count, co
+@@ -2527,9 +2735,146 @@ void D3D12Backend::CaptureDraw(const State& s, uint32_t prim, uint32_t count, co
      CaptureTextures(s, stages);
  }
  
@@ -903,7 +904,7 @@ index 3f9d4e7..ebd4e0f 100644
      fputc('\n', cap_);
  }
  
-@@ -2628,16 +2972,19 @@ void D3D12Backend::SetViewportScissor(const State& s, uint32_t gw) {
+@@ -2628,16 +2973,19 @@ void D3D12Backend::SetViewportScissor(const State& s, uint32_t gw) {
      float W = float(bound_rt_ ? bound_rt_->w : bound_ds_->w);
      float H = float(bound_rt_ ? bound_rt_->h : bound_ds_->h);
      D3D12_VIEWPORT vp{0, 0, W, H, 0, 1};
@@ -927,7 +928,7 @@ index 3f9d4e7..ebd4e0f 100644
      }
      D3D12_RECT rect{std::clamp<LONG>(x0, 0, LONG(W)), std::clamp<LONG>(y0, 0, LONG(H)),
                      std::clamp<LONG>(x1, 0, LONG(W)), std::clamp<LONG>(y1, 0, LONG(H))};
-@@ -2834,6 +3181,14 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
+@@ -2834,6 +3182,14 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
  
      // stage textures, then the pixel shader made for them
      DrawTextures stages;
@@ -942,7 +943,7 @@ index 3f9d4e7..ebd4e0f 100644
      if (!BindStageTexturesAndTargets(s, stages)) return;
      PixelKey pk = MakePixelKey(s, stages.info);
      pk.quad = sh.quad;
-@@ -2855,6 +3210,56 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
+@@ -2855,6 +3211,56 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
      GuestExtent size;
      SurfaceSize(bound_rt_ ? s.rt : s.zs, size.w, size.h);
      DrawConstants c{};
@@ -999,7 +1000,7 @@ index 3f9d4e7..ebd4e0f 100644
      UploadConstants(s, sh, k, stages, size, c);
      if (ext_) binds_ = {};
  
-@@ -2877,9 +3282,9 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
+@@ -2877,9 +3283,9 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
  
  // a guest rect scaled to the target and clamped to it
  D3D12_RECT ScaledRect(const Target& t, int x0, int y0, int x1, int y1) {
@@ -1012,7 +1013,7 @@ index 3f9d4e7..ebd4e0f 100644
  }
  
  // rs: the rects buffer, reused across targets
-@@ -2918,6 +3323,7 @@ void D3D12Backend::ClearTarget(Target& t, const State& s, const ClearArgs& c, st
+@@ -2918,6 +3324,7 @@ void D3D12Backend::ClearTarget(Target& t, const State& s, const ClearArgs& c, st
          }
      }
      t.drawn = true;
@@ -1020,7 +1021,7 @@ index 3f9d4e7..ebd4e0f 100644
  }
  
  // ClearChannels' pipeline for the target format and channel mask, kept in blit_psos_; null when it can't be made
-@@ -3055,8 +3461,8 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
+@@ -3055,8 +3462,8 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
      D3D12_CPU_DESCRIPTOR_HANDLE rh = Cpu(rtv_heap_.Get(), dst_t.view, rtv_inc_);
      cl_->OMSetRenderTargets(1, &rh, FALSE, nullptr);
      float gw = src_t.gw * l.kx, gh = src_t.gh * l.ky;  // the source in the guest pixels the rects use
@@ -1031,7 +1032,7 @@ index 3f9d4e7..ebd4e0f 100644
      bool listed = l.count && l.src_rects;
      uint32_t n = listed ? l.count : 1;
      for (uint32_t i = 0; i < n; i++) {
-@@ -3065,7 +3471,7 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
+@@ -3065,7 +3472,7 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
          DrawnRect r{.x0 = 0, .y0 = 0, .x1 = whole_w, .y1 = whole_h};
          if (listed) r = ReadDrawnRect(l.src_rects, l.dst_points, i);
          if (r.x1 <= r.x0 || r.y1 <= r.y0) continue;
@@ -1040,7 +1041,7 @@ index 3f9d4e7..ebd4e0f 100644
                            0, 1};
          LONG right = std::min(LONG(vp.TopLeftX + vp.Width), LONG(dst_t.w));
          LONG bottom = std::min(LONG(vp.TopLeftY + vp.Height), LONG(dst_t.h));
-@@ -3075,7 +3481,7 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
+@@ -3075,7 +3482,7 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
          cl_->RSSetScissorRects(1, &scissor);
          binds_ = {};
          float uv[4] = {r.x0 / gw, r.y0 / gh, (r.x1 - r.x0) / gw, (r.y1 - r.y0) / gh};
@@ -1049,7 +1050,7 @@ index 3f9d4e7..ebd4e0f 100644
          float mul = 1 / dst_t.range;
          BlitOptions o{.alpha = true, .taps = taps, .mul = mul, .rtv = dst_t.fmt};
          Blit(src_res, src_t.fmt, uv, o);
-@@ -3091,7 +3497,7 @@ void D3D12Backend::CopyByRegion(const Target& src_t, ID3D12Resource* src_res, D3
+@@ -3091,7 +3498,7 @@ void D3D12Backend::CopyByRegion(const Target& src_t, ID3D12Resource* src_res, D3
      Transition(dst_t.res.Get(), dst_t.state, D3D12_RESOURCE_STATE_COPY_DEST);
      D3D12_TEXTURE_COPY_LOCATION dl{dst_t.res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
      D3D12_TEXTURE_COPY_LOCATION sl{src_res, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
@@ -1058,7 +1059,7 @@ index 3f9d4e7..ebd4e0f 100644
      bool listed = l.count && l.src_rects;
      uint32_t n = listed ? l.count : 1;
      for (uint32_t i = 0; i < n; i++) {
-@@ -3101,15 +3507,15 @@ void D3D12Backend::CopyByRegion(const Target& src_t, ID3D12Resource* src_res, D3
+@@ -3101,15 +3508,15 @@ void D3D12Backend::CopyByRegion(const Target& src_t, ID3D12Resource* src_res, D3
          if (listed) {
              GuestRect r = ReadGuestRect(l.src_rects, i);
              b.left = ScaleUnsigned(r.left, dst_scale);
@@ -1077,7 +1078,7 @@ index 3f9d4e7..ebd4e0f 100644
              }
          }
          if (b.right <= b.left || b.bottom <= b.top || dx >= dst_t.w || dy >= dst_t.h) continue;
-@@ -3230,10 +3636,56 @@ void D3D12Backend::UploadGammaRamp() {
+@@ -3230,10 +3637,56 @@ void D3D12Backend::UploadGammaRamp() {
      cl_->CopyTextureRegion(&dl, 0, 0, 0, &sl, nullptr);
  }
  
@@ -1137,7 +1138,7 @@ index 3f9d4e7..ebd4e0f 100644
      float w = float(bb_w_);
      float h = float(bb_h_);
      float vw = std::min(w, h * aspect);
-@@ -3245,7 +3697,8 @@ void D3D12Backend::BlitFrame(Target& t) {
+@@ -3245,7 +3698,8 @@ void D3D12Backend::BlitFrame(Target& t) {
      cl_->RSSetScissorRects(1, &scissor);
      binds_ = {};
      Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -1147,7 +1148,7 @@ index 3f9d4e7..ebd4e0f 100644
  }
  
  void D3D12Backend::RenderUi() {
-@@ -3324,12 +3777,12 @@ void LogPerf() {
+@@ -3324,12 +3778,12 @@ void LogPerf() {
          Perf& p = g_perf;
          double n = double(perf_frames);
          double host = p.draw + p.clear + p.copy + p.present + p.sync;
@@ -1162,7 +1163,7 @@ index 3f9d4e7..ebd4e0f 100644
               "resource %.2f fence %.2f flush %.2f copy %.2f, next frame %.2f) | read-backs waited for: %.1f lock, "
               "%.1f NOOVERWRITE",
               g_perf_capture_ns.exchange(0) / n / 1e6, g_perf_wait_ns.exchange(0) / n / 1e6,
-@@ -3338,7 +3791,7 @@ void LogPerf() {
+@@ -3338,7 +3792,7 @@ void LogPerf() {
               g_perf_wait_kind_ns[3].exchange(0) / n / 1e6, g_perf_wait_kind_ns[4].exchange(0) / n / 1e6,
               g_perf_wait_kind_ns[5].exchange(0) / n / 1e6, g_perf_sync_block.exchange(0) / n,
               g_perf_sync_late.exchange(0) / n);
@@ -1171,7 +1172,7 @@ index 3f9d4e7..ebd4e0f 100644
               "hashed | %.1f tex uploads %.2f MB, %.1f new tex, %.1f new targets, %.1f target uploads, %.1f shrinks, "
               "%.1f read-backs %.1f late | %llu shaders %llu psos this second",
               p.draws / n, p.raw / n, p.verts / n / 1000.0, p.upload / n / 1048576.0, p.overflow / n, p.sigs / n,
-@@ -3394,12 +3847,14 @@ void D3D12Backend::WaitGpuFrame(uint64_t n) {
+@@ -3394,12 +3848,14 @@ void D3D12Backend::WaitGpuFrame(uint64_t n) {
  void D3D12Backend::ApplySettings() {
      if (texturedumper::Update()) ReleasePackTextures();
      float want = app::RenderScale(guest_h_);
@@ -1319,10 +1320,18 @@ index cb41514..e770c3f 100644
  
  }  // namespace gpu
 diff --git a/runtime/gpu/texturedumper.cpp b/runtime/gpu/texturedumper.cpp
-index 612db6c..b086fbf 100644
+index 612db6c..45a5308 100644
 --- a/runtime/gpu/texturedumper.cpp
 +++ b/runtime/gpu/texturedumper.cpp
-@@ -31,6 +31,7 @@
+@@ -11,6 +11,7 @@
+ #include <wrl/client.h>
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <chrono>
+ #include <condition_variable>
+ #include <cstdio>
+@@ -31,6 +32,7 @@
  #include "app/app.h"
  #include "core/log.h"
  #include "gpu/shaders.h"
@@ -1330,7 +1339,7 @@ index 612db6c..b086fbf 100644
  
  using Microsoft::WRL::ComPtr;
  
-@@ -53,16 +54,20 @@ using Clock = std::chrono::steady_clock;
+@@ -53,18 +55,23 @@ using Clock = std::chrono::steady_clock;
  
  // the settings as Update latched them, the render thread's
  struct Latched {
@@ -1352,8 +1361,11 @@ index 612db6c..b086fbf 100644
 +    std::vector<fs::path> builtin;                 // textures/packs/<name> for each name in texture_packs
      fs::path dump_dir;
      std::unordered_map<uint64_t, fs::path> files;  // by the key in their names; written by Update alone
++    std::unordered_map<uint64_t, fs::path> overlays;  // <key>_overlay images: drawn over the game's texture (Overlay)
      HANDLE watch = INVALID_HANDLE_VALUE;           // changes under pack_dir
-@@ -74,6 +79,7 @@ struct Pack {
+     uint32_t watch_tries = 0;
+     std::optional<Clock::time_point> changed;      // the last change seen, not listed yet
+@@ -74,6 +81,7 @@ struct Pack {
      std::condition_variable wake;
      std::deque<std::function<void()>> jobs;
      std::unordered_set<uint64_t> asked;
@@ -1361,14 +1373,14 @@ index 612db6c..b086fbf 100644
      std::unordered_map<uint64_t, std::optional<Image>> loaded;  // empty: the file did not load
      std::unordered_set<uint64_t> dumped;
  };
-@@ -173,17 +179,24 @@ std::string Utf8(const fs::path& p) {
+@@ -173,17 +181,27 @@ std::string Utf8(const fs::path& p) {
      return std::string(s.begin(), s.end());
  }
  
 -void ListPack(const fs::path& dir) {
 -    g.files.clear();
 +void ListDir(const fs::path& dir) {
-+    size_t before = g.files.size();
++    size_t before = g.files.size() + g.overlays.size();
      std::error_code ec;
      fs::recursive_directory_iterator it(dir, ec);
      for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
@@ -1376,21 +1388,24 @@ index 612db6c..b086fbf 100644
          bool image = _wcsicmp(p.extension().c_str(), L".dds") == 0 || _wcsicmp(p.extension().c_str(), L".png") == 0;
          uint64_t key = image ? KeyInName(p.stem().wstring()) : 0;
 -        if (key) g.files.emplace(key, p);
-+        if (key) g.files.emplace(key, p);  // the first listed wins
++        std::wstring stem = p.stem().wstring();
++        bool overlay = stem.size() > 8 && _wcsicmp(stem.c_str() + stem.size() - 8, L"_overlay") == 0;
++        if (key) (overlay ? g.overlays : g.files).emplace(key, p);  // the first listed wins
      }
 -    LOGR("texture pack: %zu images in %s", g.files.size(), Utf8(dir).c_str());
-+    LOGR("texture pack: %zu images in %s", g.files.size() - before, Utf8(dir).c_str());
++    LOGR("texture pack: %zu images in %s", g.files.size() + g.overlays.size() - before, Utf8(dir).c_str());
 +}
 +
 +// the player's pack first, so its images win over a built-in pack's for the same texture
 +void ListPack() {
 +    g.files.clear();
++    g.overlays.clear();
 +    if (g.set.custom) ListDir(g.pack_dir);
 +    for (const fs::path& dir : g.builtin) ListDir(dir);
  }
  
  // DDS files
-@@ -491,11 +504,22 @@ Image Decode(const TextureDesc& d, const uint8_t* guest, const uint32_t* palette
+@@ -491,11 +509,22 @@ Image Decode(const TextureDesc& d, const uint8_t* guest, const uint32_t* palette
  // the settings into g.set; false when none changed
  bool LatchSettings() {
      const app::Settings& s = app::Get();
@@ -1414,7 +1429,7 @@ index 612db6c..b086fbf 100644
      if (now.dumping) {
          g.dump_dir = root / "dumps";
          std::error_code ec;
-@@ -532,10 +556,11 @@ bool UpdatePackFiles() {
+@@ -532,10 +561,11 @@ bool UpdatePackFiles() {
      NoteFolderChange(now);
      if (!g.changed || now - *g.changed < kSettle) return false;
      g.changed.reset();
@@ -1427,11 +1442,91 @@ index 612db6c..b086fbf 100644
      g.loaded.clear();
      return true;
  }
-@@ -553,8 +578,34 @@ uint32_t Generation() { return g.generation; }
+@@ -551,10 +581,113 @@ bool Update() {
  
- bool Replacing() { return g.set.replacing && !g.files.empty(); }
+ uint32_t Generation() { return g.generation; }
  
+-bool Replacing() { return g.set.replacing && !g.files.empty(); }
++bool Replacing() { return g.set.replacing && (!g.files.empty() || !g.overlays.empty()); }
++
 +bool Upscaling() { return g.set.upscale; }
++
++// base's colour at (x, y) of a w x h picture over it, bilinear, edges clamped
++void SampleScaled(const Level& base, uint32_t bw, uint32_t bh, uint32_t w, uint32_t h, uint32_t x, uint32_t y,
++                  float out[4]) {
++    float sx = (x + 0.5f) * bw / w - 0.5f, sy = (y + 0.5f) * bh / h - 0.5f;
++    int x0 = int(std::floor(sx)), y0 = int(std::floor(sy));
++    float fx = sx - x0, fy = sy - y0;
++    auto at = [&](int xx, int yy, int c) {
++        xx = std::clamp(xx, 0, int(bw) - 1);
++        yy = std::clamp(yy, 0, int(bh) - 1);
++        return float(base.px[size_t(yy) * base.pitch + size_t(xx) * 4 + c]);
++    };
++    for (int c = 0; c < 4; c++) {
++        float top = at(x0, y0, c) * (1 - fx) + at(x0 + 1, y0, c) * fx;
++        float bottom = at(x0, y0 + 1, c) * (1 - fx) + at(x0 + 1, y0 + 1, c) * fx;
++        out[c] = top * (1 - fy) + bottom * fy;
++    }
++}
++
++// the game's texture (its sharper copy when ui_upscale is on) at the overlay's size, the overlay's pixels in place
++// of its own wherever the overlay is not fully clear: a pack changes a few icons of an atlas without holding the rest
++// of the game's art. An overlay pixel of alpha 1/255 clears what is under it.
++bool Composite(const Image& game, bool upscale, const fs::path& path, Image& out) {
++    Image over, base;
++    bool dds = _wcsicmp(path.extension().c_str(), L".dds") == 0;
++    if (dds || !ReadPng(path, over) || over.format != DXGI_FORMAT_B8G8R8A8_UNORM) {
++        LOGE("texture pack: overlay %s did not load (a PNG is needed)", Utf8(path).c_str());
++        return false;
++    }
++    if (!(upscale && ui_upscale::Make(game, base))) {
++        if (game.format != DXGI_FORMAT_B8G8R8A8_UNORM || game.levels.empty()) {
++            // ui_upscale reads the BC formats as well; without it only 32 bit textures take an overlay
++            if (!ui_upscale::Make(game, base)) return false;
++        } else {
++            base = game;
++        }
++    }
++    const Level& b = base.levels[0];
++    Level& o = over.levels[0];
++    for (uint32_t y = 0; y < over.height; y++) {
++        for (uint32_t x = 0; x < over.width; x++) {
++            uint8_t* p = &o.px[size_t(y) * o.pitch + size_t(x) * 4];
++            if (p[3]) continue;
++            float c[4];
++            SampleScaled(b, base.width, base.height, over.width, over.height, x, y, c);
++            for (int i = 0; i < 4; i++) p[i] = uint8_t(std::clamp(c[i] + 0.5f, 0.0f, 255.0f));
++        }
++    }
++    over.levels.resize(1);
++    out = std::move(over);
++    return true;
++}
++
++bool Overlay(uint64_t key, const TextureDesc& d, const uint8_t* guest, const uint32_t* palette) {
++    if (!g.set.replacing || !key || g.files.count(key)) return false;
++    auto it = g.overlays.find(key);
++    if (it == g.overlays.end()) return false;
++    uint32_t revision = 0;
++    {
++        std::lock_guard l(g.lock);
++        if (!g.generated.insert(key).second) return true;
++        revision = g.revision;
++    }
++    Post([key, revision, path = it->second, upscale = g.set.upscale, img = Decode(d, guest, palette)] {
++        Image out;
++        bool ok = Composite(img, upscale, path, out);
++        if (ok) AddMipmaps(out);
++        std::lock_guard l(g.lock);
++        if (revision != g.revision) return;
++        if (ok) {
++            g.loaded[key] = std::move(out);
++        } else {
++            g.loaded[key] = std::nullopt;
++        }
++    });
++    return true;
++}
 +
 +bool Upscale(uint64_t key, const TextureDesc& d, const uint8_t* guest, const uint32_t* palette) {
 +    if (!g.set.upscale || !key) return false;
@@ -1456,14 +1551,14 @@ index 612db6c..b086fbf 100644
 +    });
 +    return true;
 +}
-+
+ 
  uint64_t Key(const TextureDesc& d, const FormatInfo& fi, const uint8_t* guest, const uint32_t* palette) {
 -    if (!Replacing() && !g.set.dumping) return 0;
 +    if (!Replacing() && !g.set.dumping && !g.set.upscale) return 0;
      // cube maps, volumes and depth stay the console's; linear ones are movie frames and the game's own copies
      if (d.cube || d.depth > 1 || d.linear || UploadFormat(fi.host) == DXGI_FORMAT_UNKNOWN) return 0;
      uint32_t shape[] = {d.format, d.width, d.height};
-@@ -582,7 +633,17 @@ void Dump(uint64_t key, const TextureDesc& d, const uint8_t* guest, const uint32
+@@ -582,7 +715,17 @@ void Dump(uint64_t key, const TextureDesc& d, const uint8_t* guest, const uint32
  
  Lookup Take(uint64_t key, Image& out) {
      auto file = g.files.find(key);
@@ -1483,10 +1578,10 @@ index 612db6c..b086fbf 100644
      {
          std::lock_guard l(g.lock);
 diff --git a/runtime/gpu/texturedumper.h b/runtime/gpu/texturedumper.h
-index b0facfb..a0ab202 100644
+index b0facfb..8b6df05 100644
 --- a/runtime/gpu/texturedumper.h
 +++ b/runtime/gpu/texturedumper.h
-@@ -35,6 +35,12 @@ uint32_t Generation();
+@@ -35,6 +35,16 @@ uint32_t Generation();
  // replacement on and the pack holds images
  bool Replacing();
  
@@ -1495,6 +1590,10 @@ index b0facfb..a0ab202 100644
 +// starts making the sharper copy of a texture drawn in screen space, which Take then hands out under its key;
 +// false when none is made (setting off, or a pack image for the key)
 +bool Upscale(uint64_t key, const TextureDesc& d, const uint8_t* guest, const uint32_t* palette);
++
++// an overlay in a pack for key (<size>_<key>_overlay.png): starts making the game's texture with the overlay's pixels
++// in place of its own, which Take then hands out under its key; false without one
++bool Overlay(uint64_t key, const TextureDesc& d, const uint8_t* guest, const uint32_t* palette);
 +
  // the name of a texture's bytes, a P8 texture's with its 256 colours; 0 when neither the pack nor dumping applies
  uint64_t Key(const TextureDesc& d, const FormatInfo& fi, const uint8_t* guest, const uint32_t* palette);

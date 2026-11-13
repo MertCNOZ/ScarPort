@@ -1,8 +1,9 @@
-# Draws the "modern_buttons" texture pack: the game's controller button icons as a modern Xbox controller's, drawn
-# here from shapes and text (no game art), at 8 times the game's size. The game's textures are named by the hash the
-# runtime gives their bytes (textures\dumps names them so); each image here takes the place of one:
-#   32x32 A, B, X, Y (pause menu and prompts), and the 128x256 icon atlas (buttons, triggers, sticks, arrows).
-# The boxes are where the game's atlas has each icon (found from its alpha), times 8.
+# Draws the "modern_buttons" texture pack: the game's Xbox button icons (the coloured A, B, X and Y gems in its menu
+# atlases) as a modern Xbox controller's dark round buttons with coloured letters, drawn here from shapes and text.
+# The atlases also hold the rest of the menus' art, so each image here is an overlay (<size>_<key>_overlay.png, see
+# the SDK's texturedumper): the runtime draws it over the player's own copy of the texture when the game uses it, and
+# the pack holds nothing of the game. Each gem's box is erased (alpha 1) and the new button drawn in it, at 4 times
+# the atlas' size (as ui_upscale makes the atlas). The boxes are what tools\find_button_gems.ps1 found in the dumps.
 # Usage: powershell -ExecutionPolicy Bypass -File tools\make_button_icons.ps1 [out folder]
 param([string]$Out = (Join-Path (Split-Path $PSScriptRoot) "packs\modern_buttons"))
 Add-Type -AssemblyName System.Drawing
@@ -152,46 +153,69 @@ public static class Icons {
 "@
 
 New-Item -ItemType Directory -Force $Out | Out-Null
-$k = 8
-$green = [System.Drawing.Color]::FromArgb(255, 110, 205, 70)
-$red = [System.Drawing.Color]::FromArgb(255, 235, 72, 62)
-$blue = [System.Drawing.Color]::FromArgb(255, 72, 146, 240)
-$yellow = [System.Drawing.Color]::FromArgb(255, 245, 205, 50)
-
-# the single 32x32 face buttons
-$singles = @{ "be24b0363a4db709" = @("A", $green); "46079a11e789a4d5" = @("B", $red);
-              "46095a0cd4438b43" = @("X", $blue); "2978e289885083bb" = @("Y", $yellow) }
-foreach ($key in $singles.Keys) {
-    $b = New-Object System.Drawing.Bitmap (32 * $k), (32 * $k)
+Get-ChildItem $Out -Filter *.png | Remove-Item
+$k = 4
+$colours = @{ "A" = [System.Drawing.Color]::FromArgb(255, 110, 205, 70); "B" = [System.Drawing.Color]::FromArgb(255, 235, 72, 62);
+              "X" = [System.Drawing.Color]::FromArgb(255, 72, 146, 240); "Y" = [System.Drawing.Color]::FromArgb(255, 245, 205, 50) }
+# <atlas key> <atlas size> <button> <x> <y> <w> <h>, in the game's texels
+$gems = @(
+    "9bb686564c6f0e2c 512x512 A 446 278 18 23",
+    "9bb686564c6f0e2c 512x512 A 472 278 18 23",
+    "9bb686564c6f0e2c 512x512 B 446 210 18 23",
+    "9bb686564c6f0e2c 512x512 B 446 244 18 23",
+    "9bb686564c6f0e2c 512x512 X 446 108 18 23",
+    "9bb686564c6f0e2c 512x512 X 446 40 18 23",
+    "9bb686564c6f0e2c 512x512 Y 367 457 18 23",
+    "9bb686564c6f0e2c 512x512 Y 446 346 18 23",
+    "b17b1f7c7bdae1f0 512x128 A 309 74 18 23",
+    "b17b1f7c7bdae1f0 512x128 A 375 6 18 23",
+    "b17b1f7c7bdae1f0 512x128 B 283 74 18 23",
+    "b17b1f7c7bdae1f0 512x128 B 349 6 18 23",
+    "b17b1f7c7bdae1f0 512x128 X 164 90 18 23",
+    "b17b1f7c7bdae1f0 512x128 X 205 59 18 23",
+    "b17b1f7c7bdae1f0 512x128 Y 361 40 18 23",
+    "b17b1f7c7bdae1f0 512x128 Y 387 40 18 23",
+    "de07cd17538dd95b 512x512 A 157 475 18 23",
+    "de07cd17538dd95b 512x512 A 205 447 18 23",
+    "de07cd17538dd95b 512x512 B 313 291 18 23",
+    "de07cd17538dd95b 512x512 B 339 257 18 23",
+    "de07cd17538dd95b 512x512 X 257 413 18 23",
+    "de07cd17538dd95b 512x512 X 488 173 18 23",
+    "de07cd17538dd95b 512x512 Y 231 413 18 23",
+    "de07cd17538dd95b 512x512 Y 287 291 18 23",
+    "f21ef600f853b196 512x128 A 134 81 18 23",
+    "f21ef600f853b196 512x128 A 160 60 18 23",
+    "f21ef600f853b196 512x128 B 157 26 18 23",
+    "f21ef600f853b196 512x128 B 82 94 18 23",
+    "f21ef600f853b196 512x128 X 262 40 18 23",
+    "f21ef600f853b196 512x128 X 288 6 18 23",
+    "f21ef600f853b196 512x128 Y 212 74 18 23",
+    "f21ef600f853b196 512x128 Y 236 6 18 23",
+    "fa4e4282afbc6613 512x256 A 101 224 18 23",
+    "fa4e4282afbc6613 512x256 A 127 224 18 23",
+    "fa4e4282afbc6613 512x256 B 410 126 18 23",
+    "fa4e4282afbc6613 512x256 B 490 40 18 23",
+    "fa4e4282afbc6613 512x256 X 205 224 18 23",
+    "fa4e4282afbc6613 512x256 X 232 190 18 23",
+    "fa4e4282afbc6613 512x256 Y 180 190 18 23",
+    "fa4e4282afbc6613 512x256 Y 490 6 18 23"
+)
+$erase = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(1, 0, 0, 0))
+foreach ($atlas in ($gems | Group-Object { $_.Split(' ')[0] })) {
+    $size = $atlas.Group[0].Split(' ')[1].Split('x')
+    $b = New-Object System.Drawing.Bitmap ([int]$size[0] * $k), ([int]$size[1] * $k)
     $g = [Icons]::Begin($b)
-    [Icons]::Face($g, (New-Object System.Drawing.RectangleF 0, 0, (23 * $k), (23 * $k)), $singles[$key][0], $singles[$key][1])
-    $b.Save((Join-Path $Out "32x32_${key}_DXT5.png"), [System.Drawing.Imaging.ImageFormat]::Png)
+    foreach ($line in $atlas.Group) {
+        $f = $line.Split(' ')
+        $x = [int]$f[3]; $y = [int]$f[4]; $w = [int]$f[5]; $h = [int]$f[6]
+        $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy  # alpha 1 as it is, not blended
+        $g.FillRectangle($erase, ($x - 1) * $k, ($y - 1) * $k, ($w + 2) * $k, ($h + 2) * $k)
+        $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceOver
+        # the round button as wide as the erased box, in the middle of it
+        $r = New-Object System.Drawing.RectangleF (($x - 1) * $k), (($y + ($h - $w) / 2 - 1) * $k), (($w + 2) * $k), (($w + 2) * $k)
+        [Icons]::Face($g, $r, $f[2], $colours[$f[2]])
+    }
+    $b.Save((Join-Path $Out ("{0}x{1}_{2}_overlay.png" -f $size[0], $size[1], $atlas.Name)), [System.Drawing.Imaging.ImageFormat]::Png)
     $g.Dispose(); $b.Dispose()
 }
-
-# the 128x256 atlas: x, y, width, height of each icon in the game's texture, and what it becomes
-$atlas = @(
-    @(0, 0, 23, 23, "face", "A"), @(25, 0, 23, 23, "face", "B"), @(50, 0, 23, 23, "face", "X"), @(0, 33, 23, 23, "face", "Y"),
-    @(31, 33, 20, 23, "trigger", "LT"), @(53, 33, 20, 23, "trigger", "RT"),
-    @(75, 34, 22, 21, "arrow", 0), @(1, 68, 19, 19, "arrow", 45), @(22, 66, 21, 22, "arrow", 90), @(45, 69, 19, 19, "arrow", 135),
-    @(68, 67, 22, 21, "arrow", 180), @(0, 101, 19, 19, "arrow", 225), @(22, 100, 21, 22, "arrow", 270), @(46, 100, 19, 19, "arrow", 315),
-    @(67, 99, 22, 22, "stick", "LS"), @(0, 132, 23, 24, "turn", ""), @(25, 132, 22, 22, "stick", "RS"),
-    @(50, 134, 19, 19, "dpad", ""), @(72, 133, 18, 21, "bumper", "LB"), @(1, 167, 18, 20, "bumper", "RB"))
-$colours = @{ "A" = $green; "B" = $red; "X" = $blue; "Y" = $yellow }
-$b = New-Object System.Drawing.Bitmap (128 * $k), (256 * $k)
-$g = [Icons]::Begin($b)
-foreach ($i in $atlas) {
-    $r = New-Object System.Drawing.RectangleF ($i[0] * $k), ($i[1] * $k), ($i[2] * $k), ($i[3] * $k)
-    switch ($i[4]) {
-        "face" { [Icons]::Face($g, $r, $i[5], $colours[$i[5]]) }
-        "trigger" { [Icons]::Trigger($g, $r, $i[5]) }
-        "bumper" { [Icons]::Bumper($g, $r, $i[5]) }
-        "stick" { [Icons]::Stick($g, $r, $i[5]) }
-        "dpad" { [Icons]::Dpad($g, $r) }
-        "arrow" { [Icons]::Arrow($g, $r, [float]$i[5]) }
-        "turn" { [Icons]::Turn($g, $r) }
-    }
-}
-$b.Save((Join-Path $Out "128x256_ae7c8bc40d1623af_DXT5.png"), [System.Drawing.Imaging.ImageFormat]::Png)
-$g.Dispose(); $b.Dispose()
 Get-ChildItem $Out | ForEach-Object { "{0} ({1} KB)" -f $_.Name, [int]($_.Length / 1024) }
