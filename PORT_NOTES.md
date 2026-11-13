@@ -306,3 +306,12 @@ planned. To check: whether this PAL title accepts the NTSC-M/60 Hz report and wh
   red car itself glow, so it is luminance.
 - Both default off (the original look). Checked at 1920x1080 in a race at the start and driving: darker contact under
   the car and along the barriers, glow on white signs and lines, HUD untouched, pause menu fine, no errors in the log.
+
+## 2D pieces cut to the 4:3 picture (2026-11-13)
+
+- The grey square at the top left of TRACK SELECTION (and the black side panels beside it) were the game's own 2D
+  frame pieces reaching past the 4:3 picture: off the console's screen, in the bars on a widened view. A 2D draw that
+  is drawn narrower about the centre (hud.x < 1: pretransformed or the orthographic 2D layer, under 90% of the width;
+  not movies, not the anchored race HUD) now gets its scissor cut to the middle 1/WideFactor of the target
+  (`clip_x_`, SetViewportScissor). Track selection now shows its full width checkered background with the menu in the
+  middle and no square; the main menu (4:3 movie), the race HUD and the pause menu are as before.
