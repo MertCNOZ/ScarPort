@@ -230,3 +230,20 @@ planned. To check: whether this PAL title accepts the NTSC-M/60 Hz report and wh
 - Translations: 18 new entries in tools/lang_table.py (Turkish, Russian), launcher/lang_table.inc regenerated.
 - Checked: opens, Turkish UI from Windows' language, finds the extracted game in assets, reads settings.toml. The
   user tests the pages and Play.
+
+## Car reflections: the environment cube from render targets (2026-11-13)
+
+- The car body draws (fixed function, vs B0166331/B0166311) take t1 = 82E9C000, a 128x128 X8R8G8B8 cube (one level,
+  face stride 0x10000) with texgen `reflect(normalize(vp), vn)` times texture matrix 1; the combiner adds
+  `t1 * tfactor` to the paint. Each frame the game renders three faces of it as render targets: face 0 (82E9C000, a
+  side view), face 2 (82EBC000, the sky) and face 4 (82EDC000, a horizontal view). Faces 1, 3 and 5 are never
+  rendered in a race (no target at their address in the whole run).
+- The runtime bound render targets only for 2D textures; a cube was decoded from guest memory, which holds nothing of
+  what the GPU drew (targets are not read back), so the reflection added black. `BindTargetCube` (d3d12.cpp): for a
+  cube with any face that is a colour target of the cube's size, a host cube of the targets' host size (render scale:
+  288x288 at 2.25) gets each face copied in when its target was written since the last copy (`Target::written`, a
+  write count set by draws and clears); faces without a target are cleared black once, as the console's memory there
+  is. Log line `cube 82E9C000 128x128: faces from targets 0-2-4-`.
+- Checked against a run without it: sky and track highlights on the roof, boot and bumpers, which were flat red.
+- 834E9080 (512x512) is not glass: draw 0476 copies the back buffer mirrored into it and two draws with ps B0101A10
+  map it, the rear view mirror; it was bound as a target already.
