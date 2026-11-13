@@ -22,7 +22,7 @@ void LoadPadMap(const void* table);            // pad_map.cpp
 void SavePadMap(void* table);
 void MapPad(int port, input::Pad& pad);
 uint32_t g_rumble = 100;         // percent of the game's rumble
-uint32_t g_draw_distance = 100;  // percent of the game's far clip (src/game/hooks.cpp)
+uint32_t g_draw_distance = 200;  // percent of the game's far clip (src/game/hooks.cpp)
 bool g_hud_edges = true;         // the race HUD at the screen's edges on a widened view (src/game/hooks.cpp)
 extern bool g_show_fps;          // fps.cpp
 void FpsOverlay(double fps);
@@ -39,7 +39,20 @@ void Rumble(int, uint16_t& left, uint16_t& right) {
 // exits when the mode list has none (PORT_NOTES, first boot)
 void Load(const void* table) {
     LoadPadMap(table);
-    if (!static_cast<const toml::table*>(table)->contains("tv_standard")) app::Get().tv_standard = 1;
+    const toml::table& t = *static_cast<const toml::table*>(table);
+    if (!t.contains("tv_standard")) app::Get().tv_standard = 2;  // PAL with PAL60: 50 and 60 Hz modes
+    // ScarPort's defaults where the file has none (the launcher writes the same): fullscreen at the monitor's
+    // refresh rate without vsync, FXAA, sharpening 50, field of view 120 %, bloom 150 %
+    app::Settings& a = app::Get();
+    if (!t.contains("display_mode")) a.display_mode = app::DisplayMode::Fullscreen;
+    if (!t.contains("fps_cap")) a.fps_cap = app::kFpsCapRefresh;
+    if (!t.contains("vsync")) a.vsync = false;
+    if (!t.contains("fxaa")) a.fxaa = true;
+    if (!t.contains("sharpen")) a.sharpen = 50;
+    if (!t.contains("fov")) a.fov = 120;
+    if (!t.contains("bloom")) a.bloom = 150;
+    // ambient occlusion is not used in SCAR: the runtime keeps it, the launcher has no option for it
+    a.ssao = 0;
     // the modern button icons (packs/modern_buttons, overlays drawn on the player's own menu atlases) unless the file
     // says otherwise
     if (!static_cast<const toml::table*>(table)->contains("texture_packs")) app::Get().texture_packs = "modern_buttons";

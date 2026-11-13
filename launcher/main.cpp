@@ -50,7 +50,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr const char* kVersion = "0.1.0";
+constexpr const char* kVersion = "1.0.0";
 constexpr const wchar_t* kGameExe = L"SCAR.exe";
 constexpr const char* kTitleId = "4c530002";
 
@@ -283,25 +283,24 @@ const char* kControllerButtons[16] = {"A",       "B",          "X",          "Y"
                                       "Menu",    "View",       "LS (click)", "RS (click)"};
 
 struct Settings {
-    int display_mode = 1;  // fullscreen, borderless, windowed
+    int display_mode = 0;  // fullscreen, borderless, windowed
     int width = 0, height = 0;
     int render_percent = 100;
-    int fps_cap = 60;
-    bool vsync = true;
+    int fps_cap = 1;  // the monitor's refresh rate
+    bool vsync = false;
     int aniso = 16;
-    int sharpen = 40;
-    int draw_distance = 100;
+    int sharpen = 50;
+    int draw_distance = 200;
     int aspect = 0;  // 0 widescreen (wider view), 1 4:3, 2 stretched
     bool full_width = true;
-    int fov = 100;
-    int ssao = 0;   // ambient occlusion strength, percent; 0 off
-    int bloom = 0;  // bloom strength, percent; 0 off
-    bool fxaa = false;
+    int fov = 120;
+    int bloom = 150;  // bloom strength, percent; 0 off
+    bool fxaa = true;
     int rumble = 100;
     bool custom_textures = true;
     bool dump_textures = false;
     int dump_format = 0;
-    bool show_fps = false;
+    bool show_fps = true;
     bool hud_edges = true;  // the race HUD at the screen's edges in widescreen
     bool ui_upscale = true;
     bool video_filter = true;
@@ -327,29 +326,28 @@ Settings LoadSettings() {
     Settings s;
     try {
         toml::table t = toml::parse_file(SettingsFile().string());
-        std::string mode = t["display_mode"].value_or(std::string("borderless"));
+        std::string mode = t["display_mode"].value_or(std::string(kModes[s.display_mode]));
         for (int i = 0; i < 3; i++)
             if (mode == kModes[i]) s.display_mode = i;
         s.width = int(t["width"].value_or(int64_t(0)));
         s.height = int(t["height"].value_or(int64_t(0)));
         s.render_percent = int(t["render_percent"].value_or(int64_t(100)));
-        s.fps_cap = int(t["fps_cap"].value_or(int64_t(60)));
-        s.vsync = t["vsync"].value_or(true);
+        s.fps_cap = int(t["fps_cap"].value_or(int64_t(s.fps_cap)));
+        s.vsync = t["vsync"].value_or(s.vsync);
         s.aniso = int(t["anisotropic_filtering"].value_or(int64_t(16)));
-        s.sharpen = std::clamp(int(t["sharpen"].value_or(int64_t(40))), 0, 100);
-        s.draw_distance = std::clamp(int(t["draw_distance"].value_or(int64_t(100))), 25, 400);
+        s.sharpen = std::clamp(int(t["sharpen"].value_or(int64_t(s.sharpen))), 0, 100);
+        s.draw_distance = std::clamp(int(t["draw_distance"].value_or(int64_t(s.draw_distance))), 25, 400);
         s.game_language = int(t["game_language"].value_or(int64_t(1)));
         s.aspect = std::clamp(int(t["aspect"].value_or(int64_t(0))), 0, 2);
         s.full_width = t["full_width"].value_or(true);
-        s.fov = std::clamp(int(t["fov"].value_or(int64_t(100))), 70, 120);
-        s.ssao = std::clamp(int(t["ssao"].value_or(int64_t(0))), 0, 200);
-        s.bloom = std::clamp(int(t["bloom"].value_or(int64_t(0))), 0, 200);
-        s.fxaa = t["fxaa"].value_or(false);
+        s.fov = std::clamp(int(t["fov"].value_or(int64_t(s.fov))), 70, 120);
+        s.bloom = std::clamp(int(t["bloom"].value_or(int64_t(s.bloom))), 0, 200);
+        s.fxaa = t["fxaa"].value_or(s.fxaa);
         s.rumble = std::clamp(int(t["rumble"].value_or(int64_t(100))), 0, 100);
         s.custom_textures = t["custom_textures"].value_or(true);
         s.dump_textures = t["dump_textures"].value_or(false);
         s.dump_format = int(t["texture_dump_format"].value_or(int64_t(0)));
-        s.show_fps = t["show_fps"].value_or(false);
+        s.show_fps = t["show_fps"].value_or(s.show_fps);
         s.hud_edges = t["hud_edges"].value_or(true);
         s.ui_upscale = t["ui_upscale"].value_or(true);
         s.video_filter = t["video_filter"].value_or(true);
@@ -411,7 +409,7 @@ void SaveSettings(const Settings& s) {
     t.insert_or_assign("aspect", int64_t(s.aspect));
     t.insert_or_assign("full_width", s.full_width);
     t.insert_or_assign("fov", int64_t(s.fov));
-    t.insert_or_assign("ssao", int64_t(s.ssao));
+    t.insert_or_assign("ssao", int64_t(0));  // ambient occlusion stays off in SCAR
     t.insert_or_assign("bloom", int64_t(s.bloom));
     t.insert_or_assign("fxaa", s.fxaa);
     t.insert_or_assign("rumble", int64_t(s.rumble));
@@ -862,16 +860,6 @@ void PageGraphics(Ui& ui) {
     Row("Field of view");
     Slider("##fov", &s.fov, 70, 120, 5, "%d%%");
     Desc("How wide the race cameras see, as a share of the game's own view (100%). The HUD keeps its size.");
-    Row("Ambient occlusion");
-    {
-        const int values[] = {0, 50, 100, 150};
-        int cur = 0;
-        for (int i = 0; i < 4; i++)
-            if (values[i] == s.ssao) cur = i;
-        if (Combo("##ssao", &cur, {"Off (original)", "Low", "Medium", "High"})) s.ssao = values[cur];
-    }
-    Desc("Soft shadows where surfaces meet: under the cars, along the barriers and in corners, from the race "
-         "picture's depth. Not on the HUD. Costs a little speed.");
     Row("Bloom");
     {
         const int values[] = {0, 50, 100, 150};
@@ -1728,8 +1716,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     UpdateKeyIcons(ui.s);  // a pack missing or from another build
     ui.window = hwnd;
     Log("ScarPort %s, game: %s (%s)", kVersion, ui.game.what.c_str(), ui.game.where.c_str());
-    // INDY_LAUNCHER_PAGE=0..6 opens a page at once (screenshots)
-    if (const char* pg = std::getenv("INDY_LAUNCHER_PAGE"); pg && *pg >= '0' && *pg <= '6') ui.page = Page(*pg - '0');
+    // SCAR_LAUNCHER_PAGE=0..6 opens a page at once (screenshots)
+    if (const char* pg = std::getenv("SCAR_LAUNCHER_PAGE"); pg && *pg >= '0' && *pg <= '6') ui.page = Page(*pg - '0');
     LoadModes(ui);
     bool quit = false;
     double checked = 0;

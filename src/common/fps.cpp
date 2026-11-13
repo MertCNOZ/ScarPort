@@ -14,7 +14,7 @@
 
 namespace game {
 
-bool g_show_fps = false;
+bool g_show_fps = true;
 
 void FpsOverlay(double fps) {
     // the game shows no cursor: ImGui would set the arrow on every WM_SETCURSOR

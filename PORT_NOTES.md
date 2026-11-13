@@ -318,3 +318,15 @@ planned. To check: whether this PAL title accepts the NTSC-M/60 Hz report and wh
   not movies, not the anchored race HUD) now gets its scissor cut to the middle 1/WideFactor of the target
   (`clip_x_`, SetViewportScissor). Track selection now shows its full width checkered background with the menu in the
   middle and no square; the main menu (4:3 movie), the race HUD and the pause menu are as before.
+
+## Release 1.0.0 preparation (2026-11-13)
+
+- Defaults are the setup chosen in testing: fullscreen at the desktop size, the monitor's refresh rate, no vsync,
+  FXAA, sharpening 50, draw distance 200 %, field of view 120 %, bloom 150 %, FPS counter on, PAL60 (tv_standard
+  2). The launcher's Settings and game_info.cpp's Load (keys missing from the file) agree.
+- Ambient occlusion is not used: the launcher has no option and writes ssao = 0, game_info forces it off; the
+  runtime code stays.
+- README.md and docs/launcher_*.png (taken with SCAR_LAUNCHER_PAGE=1/3, launcher in English), release.bat from
+  IndyPort's (ScarPort.zip: SCAR.exe, ScarPort.exe, compiler without its work folder, packs, empty assets, VC runtime;
+  no game code or files). The zip unpacked into an empty folder compiled the game on first start (about 6 minutes)
+  and booted with the pack and a controller.
