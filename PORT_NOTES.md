@@ -284,8 +284,11 @@ planned. To check: whether this PAL title accepts the NTSC-M/60 Hz report and wh
   alpha 1 fill, blending turned it into 0) and a dark round button with the coloured letter drawn in it. CMake's
   texture_packs target copies packs/ to textures/packs; texture_packs defaults to modern_buttons when the settings
   file has no key; launcher Controls, Button icons: Modern Xbox / Original Xbox.
-- Checked: track selection and main menu prompts show the new A and B buttons, no gem left around them. Atlases of
-  screens not dumped yet (options, results, multiplayer) keep their gems until their boxes are added.
+- Checked: track selection and main menu prompts show the new A and B buttons, no gem left around them. A dump of
+  Options, Controller and Controls (entered and left with B, nothing changed) added two 512x128 atlases
+  (24370437d8ab18d3, 295119a87aed186b); the Controller screen's prompts checked too. Screens not dumped yet
+  (results, multiplayer, dynasty) may hold more atlases: run find_button_gems.ps1 on a dump of them and add the
+  lines to make_button_icons.ps1.
 
 ## Scene effects: SSAO and bloom (2026-11-13)
 
