@@ -7,6 +7,7 @@
 //     __imp__sub_00012345(ctx, base);  // the original
 // }
 #include <algorithm>
+#include <cstdlib>
 #include <cstdint>
 #include <unordered_map>
 #include <mutex>
@@ -15,13 +16,12 @@
 #include "app/app.h"
 #include "core/log.h"
 #include "kernel/kernel.h"
-
+#include "xdk/d3d8.h"
 #include "xdk/hle.h"
-
-
 
 namespace game {
 extern uint32_t g_draw_distance;  // game_info.cpp: draw_distance in the settings, percent
+extern bool g_hud_edges;          // game_info.cpp: hud_edges in the settings
 }
 
 namespace {
@@ -74,6 +74,41 @@ void ScaleFarPlane(X86Context& ctx, uint8_t* base, uint32_t camera) {
     ctx.edx = edx;
 }
 
+// the cameras made at 0x18A600 with their view window from 0x18A748: the one the 2D layer and the race HUD are drawn
+// with (3D quads at z 1 in front of it)
+namespace {
+std::mutex g_hud_mu;
+uint32_t g_hud_cameras[4] = {};
+void RememberHudCamera(uint32_t camera) {
+    std::lock_guard<std::mutex> l(g_hud_mu);
+    for (uint32_t& c : g_hud_cameras) {
+        if (c == camera) return;
+        if (!c) {
+            c = camera;
+            return;
+        }
+    }
+}
+bool IsHudCamera(uint32_t camera) {
+    std::lock_guard<std::mutex> l(g_hud_mu);
+    for (uint32_t c : g_hud_cameras)
+        if (c && c == camera) return true;
+    return false;
+}
+
+// the HUD at the screen's edges: RwCameraBeginUpdate (0x99AF0, a tail jump to the camera's driver function) and
+// RwCameraEndUpdate (0x99B20) for the HUD camera set gpu::State::anchor while it draws, and the backend moves each
+// piece left or right of the centre to that edge on a widened view (gpu/d3d12.cpp). Its 2D layer (menus, an
+// orthographic projection) is left alone, so menus stay in the middle. The dead zone keeps the lap timer and
+// messages in the middle together: 0.3 of the 4:3 half width either side.
+constexpr uint32_t kHudDeadZone = 300;
+void SetHudAnchor(bool on) {
+    std::lock_guard<std::recursive_mutex> l(d3d::Lock());
+    d3d::State().anchor = on && game::g_hud_edges ? kHudDeadZone : 0;
+}
+}  // namespace
+
+
 // Widescreen without stretching (Hor+): RwCameraSetViewWindow 0xAEB30(camera, &viewWindow) stores the view window's
 // half extents (tangents of the half angles) at camera+0x68 and their reciprocals at +0x70; RenderWare builds the
 // projection and the frustum's clip planes from them. For a camera drawing to the screen (frame buffer raster
@@ -90,6 +125,7 @@ X86_FUNC(sub_000AEB30) {
     uint8_t type = raster ? X86_MEM8(raster + 0x20) : 0;
     float k = app::WideFactor();
     bool hud_camera = X86_MEM32(ctx.esp) == 0x18A748;
+    if (hud_camera) RememberHudCamera(camera);
     float f = hud_camera ? 1.0f : float(std::clamp(app::Get().fov, 70u, 120u)) / 100.0f;
     float x = vw ? X86_MEMF32(vw) : 0, y = vw ? X86_MEMF32(vw + 4) : 0;
     bool widen = vw && (k != 1.0f || f != 1.0f) && type == 2;
@@ -108,4 +144,16 @@ X86_FUNC(sub_000AEB30) {
         X86_MEMF32(vw + 4) = y;
     }
     if (type == 2) ScaleFarPlane(ctx, base, camera);
+}
+
+X86_EXTERN_FUNC(__imp__sub_00099AF0);
+X86_FUNC(sub_00099AF0) {
+    if (IsHudCamera(X86_MEM32(ctx.esp + 4))) SetHudAnchor(true);
+    __imp__sub_00099AF0(ctx, base);
+}
+
+X86_EXTERN_FUNC(__imp__sub_00099B20);
+X86_FUNC(sub_00099B20) {
+    if (IsHudCamera(X86_MEM32(ctx.esp + 4))) SetHudAnchor(false);
+    __imp__sub_00099B20(ctx, base);
 }

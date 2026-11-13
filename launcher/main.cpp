@@ -300,6 +300,7 @@ struct Settings {
     bool dump_textures = false;
     int dump_format = 0;
     bool show_fps = false;
+    bool hud_edges = true;  // the race HUD at the screen's edges in widescreen
     bool ui_upscale = true;
     bool video_filter = true;
     std::string game_path;
@@ -345,6 +346,7 @@ Settings LoadSettings() {
         s.dump_textures = t["dump_textures"].value_or(false);
         s.dump_format = int(t["texture_dump_format"].value_or(int64_t(0)));
         s.show_fps = t["show_fps"].value_or(false);
+        s.hud_edges = t["hud_edges"].value_or(true);
         s.ui_upscale = t["ui_upscale"].value_or(true);
         s.video_filter = t["video_filter"].value_or(true);
         s.game_path = t["game_path"].value_or(std::string());
@@ -411,6 +413,7 @@ void SaveSettings(const Settings& s) {
     t.insert_or_assign("dump_textures", s.dump_textures);
     t.insert_or_assign("texture_dump_format", int64_t(s.dump_format));
     t.insert_or_assign("show_fps", s.show_fps);
+    t.insert_or_assign("hud_edges", s.hud_edges);
     t.insert_or_assign("ui_upscale", s.ui_upscale);
     t.insert_or_assign("video_filter", s.video_filter);
     t.insert_or_assign("game_path", s.game_path);
@@ -867,6 +870,11 @@ void PageGraphics(Ui& ui) {
     Desc("The game's fonts, menus, HUD and icons are made at up to four times their size when the game starts using "
          "them, with smooth outlines for text, so they stay sharp at high resolutions. Made on your PC from your copy "
          "of the game.");
+
+    Row("HUD at the screen edges");
+    Check("##hudedges", &s.hud_edges);
+    Desc("In widescreen the race HUD (speedometer, position, lap times, track map) moves to the edges of the screen, "
+         "as on a 4:3 TV. Off keeps it in the 4:3 area in the middle. Menus always stay in the middle.");
 
     Row("Sharper movies");
     Check("##vidf", &s.video_filter);

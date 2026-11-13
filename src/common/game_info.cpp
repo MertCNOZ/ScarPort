@@ -23,6 +23,7 @@ void SavePadMap(void* table);
 void MapPad(int port, input::Pad& pad);
 uint32_t g_rumble = 100;         // percent of the game's rumble
 uint32_t g_draw_distance = 100;  // percent of the game's far clip (src/game/hooks.cpp)
+bool g_hud_edges = true;         // the race HUD at the screen's edges on a widened view (src/game/hooks.cpp)
 extern bool g_show_fps;          // fps.cpp
 void FpsOverlay(double fps);
 bool FpsMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result);
@@ -78,7 +79,8 @@ const app::GameInfo app::kGame = {
     .images = {{"default.xbe", "SCAR"}},  // each recompiled xbe and its exe, for title launches
     .options = {{"rumble", nullptr, &game::g_rumble},
                 {"draw_distance", nullptr, &game::g_draw_distance},
-                {"show_fps", &game::g_show_fps, nullptr}},
+                {"show_fps", &game::g_show_fps, nullptr},
+                {"hud_edges", &game::g_hud_edges, nullptr}},
     .load = game::Load,
     .save = game::Save,
     .init = game::Init,

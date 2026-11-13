@@ -302,6 +302,8 @@ T = [
     ('LT: Brake', 'LT: Fren', 'LT: Тормоз'),
     ('RT: Accelerate', 'RT: Gaz', 'RT: Газ'),
     ('Back', 'Back', 'Back'),
+    ('HUD at the screen edges', 'HUD ekran kenarlarında', 'Интерфейс по краям экрана'),
+    ('In widescreen the race HUD (speedometer, position, lap times, track map) moves to the edges of the screen, as on a 4:3 TV. Off keeps it in the 4:3 area in the middle. Menus always stay in the middle.', "Geniş ekranda yarış HUD'u (hız göstergesi, sıralama, tur süreleri, pist haritası) 4:3 bir televizyondaki gibi ekranın kenarlarına taşınır. Kapalıyken ortadaki 4:3 alanda kalır. Menüler her zaman ortada kalır.", 'В широкоэкранном режиме интерфейс гонки (спидометр, позиция, время кругов, карта трассы) уходит к краям экрана, как на телевизоре 4:3. Выключено: остаётся в области 4:3 посередине. Меню всегда остаются посередине.'),
 ]
 
 

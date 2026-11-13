@@ -247,3 +247,23 @@ planned. To check: whether this PAL title accepts the NTSC-M/60 Hz report and wh
 - Checked against a run without it: sky and track highlights on the roof, boot and bumpers, which were flat red.
 - 834E9080 (512x512) is not glass: draw 0476 copies the back buffer mirrored into it and two draws with ps B0101A10
   map it, the rear view mirror; it was bound as a target already.
+
+## Race HUD at the screen's edges (2026-11-13)
+
+- The race HUD is 3D quads (fixed function, vs B0166301, one draw per glyph or piece, each placed by its world
+  matrix; the quads themselves are local, e.g. 0..0.042 x 0..0.017 at z 1) drawn with the camera made at 0x18A600
+  whose view window is set from 0x18A748 (the same camera draws the 2D layer of the menus, under an orthographic
+  projection). On a widened view (Hor+) it stayed in the 4:3 area in the middle.
+- RwCameraBeginUpdate is **0x99AF0** and RwCameraEndUpdate **0x99B20** (both tail jumps through the camera's driver
+  table, `jmp [ecx+eax+0x10]` / `+0x14`). hooks.cpp remembers the HUD camera from the view window hook and, while it
+  draws, sets `gpu::State::anchor` (a new last field of the runtime's State, so the render thread gets it with the
+  rest) to the dead zone, 300/1000 of the 4:3 half width.
+- The backend (d3d12.cpp, Draw): for a draw with anchor set, the fixed function's transform, not pretransformed and
+  not orthographic, on the main target, the vertices' clip x span under world x view x projection (NdcSpanX now
+  divides by w, which is 1 for the orthographic case) gives the piece's centre in 4:3 units; left of the dead zone it
+  moves left by 1 - 1/WideFactor in clip space, right of it right by as much (hud.z, folded into the wvp's x column as
+  x + shift * w). Pieces inside the dead zone (the lap timer, messages in the middle) stay. Each glyph moves alone,
+  so a text crossing the dead zone's edge would come apart; none of the race HUD does.
+- The pause menu (the 2D layer) stays in the middle. Setting `hud_edges` (on by default; launcher: Graphics, Text and
+  HUD, "HUD at the screen edges"). Checked at 1920x1080: position and lap top left, best and last top right, track
+  map left, speedometer bottom left, timer in the middle; with hud_edges = false all as before.
