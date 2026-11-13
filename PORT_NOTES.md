@@ -286,3 +286,23 @@ planned. To check: whether this PAL title accepts the NTSC-M/60 Hz report and wh
   file has no key; launcher Controls, Button icons: Modern Xbox / Original Xbox.
 - Checked: track selection and main menu prompts show the new A and B buttons, no gem left around them. Atlases of
   screens not dumped yet (options, results, multiplayer) keep their gems until their boxes are added.
+
+## Scene effects: SSAO and bloom (2026-11-13)
+
+- Where: the HUD camera's RwCameraBeginUpdate hook also sets `gpu::State::hud`; the backend runs the effects once a
+  frame before the first draw with it set, if that frame drew a 3D scene on the main target (a perspective fixed
+  function draw with depth on, NoteSceneDraw, which also keeps its projection). So they land on the finished 3D
+  picture and the HUD is drawn over them; menus without a 3D scene get none.
+- Depth: the runtime's depth is reversed 32 bit float (1 - z/w); SCAR uses a z buffer (log line "scene effects: a z
+  buffer, projection near 0.400 far 200.0"); a w buffer is handled too (zparams from DrawWRange). View positions come
+  from the projection with the constant parts summed on the CPU (no 1 - depth cancellation).
+- SSAO (settings `ssao`, 0-200 %, launcher Off/Low/Medium/High = 0/50/100/150): half size, 12 taps on a spiral within
+  0.9 units, normals from neighbouring depths, a 4x4 rotation pattern, then a depth-weighted 9 tap blur along x and
+  y, multiplied into the main target. Tuning found in races: samples less than 8 cm above the surface's plane do not
+  count (the track's strips gave faint lines across the road otherwise; the normals checked flat in a debug view),
+  and AO fades out from 40 to 80 units (a distant see-through card behind a sign darkened a patch of sky).
+- Bloom (settings `bloom`, same scale): luminance over 0.72 (soft knee 0.15) at half size, down to a quarter and an
+  eighth, each blurred (9 tap gaussian), added onto the main target. A threshold on the brightest channel made the
+  red car itself glow, so it is luminance.
+- Both default off (the original look). Checked at 1920x1080 in a race at the start and driving: darker contact under
+  the car and along the barriers, glow on white signs and lines, HUD untouched, pause menu fine, no errors in the log.

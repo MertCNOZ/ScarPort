@@ -294,6 +294,8 @@ struct Settings {
     int aspect = 0;  // 0 widescreen (wider view), 1 4:3, 2 stretched
     bool full_width = true;
     int fov = 100;
+    int ssao = 0;   // ambient occlusion strength, percent; 0 off
+    int bloom = 0;  // bloom strength, percent; 0 off
     bool fxaa = false;
     int rumble = 100;
     bool custom_textures = true;
@@ -340,6 +342,8 @@ Settings LoadSettings() {
         s.aspect = std::clamp(int(t["aspect"].value_or(int64_t(0))), 0, 2);
         s.full_width = t["full_width"].value_or(true);
         s.fov = std::clamp(int(t["fov"].value_or(int64_t(100))), 70, 120);
+        s.ssao = std::clamp(int(t["ssao"].value_or(int64_t(0))), 0, 200);
+        s.bloom = std::clamp(int(t["bloom"].value_or(int64_t(0))), 0, 200);
         s.fxaa = t["fxaa"].value_or(false);
         s.rumble = std::clamp(int(t["rumble"].value_or(int64_t(100))), 0, 100);
         s.custom_textures = t["custom_textures"].value_or(true);
@@ -407,6 +411,8 @@ void SaveSettings(const Settings& s) {
     t.insert_or_assign("aspect", int64_t(s.aspect));
     t.insert_or_assign("full_width", s.full_width);
     t.insert_or_assign("fov", int64_t(s.fov));
+    t.insert_or_assign("ssao", int64_t(s.ssao));
+    t.insert_or_assign("bloom", int64_t(s.bloom));
     t.insert_or_assign("fxaa", s.fxaa);
     t.insert_or_assign("rumble", int64_t(s.rumble));
     t.insert_or_assign("custom_textures", s.custom_textures);
@@ -856,6 +862,26 @@ void PageGraphics(Ui& ui) {
     Row("Field of view");
     Slider("##fov", &s.fov, 70, 120, 5, "%d%%");
     Desc("How wide the race cameras see, as a share of the game's own view (100%). The HUD keeps its size.");
+    Row("Ambient occlusion");
+    {
+        const int values[] = {0, 50, 100, 150};
+        int cur = 0;
+        for (int i = 0; i < 4; i++)
+            if (values[i] == s.ssao) cur = i;
+        if (Combo("##ssao", &cur, {"Off (original)", "Low", "Medium", "High"})) s.ssao = values[cur];
+    }
+    Desc("Soft shadows where surfaces meet: under the cars, along the barriers and in corners, from the race "
+         "picture's depth. Not on the HUD. Costs a little speed.");
+    Row("Bloom");
+    {
+        const int values[] = {0, 50, 100, 150};
+        int cur = 0;
+        for (int i = 0; i < 4; i++)
+            if (values[i] == s.bloom) cur = i;
+        if (Combo("##bloom", &cur, {"Off (original)", "Low", "Medium", "High"})) s.bloom = values[cur];
+    }
+    Desc("A soft glow around the brightest parts of the race picture: the sun on white signs and lines, chrome, "
+         "bright sky. Not on the HUD.");
     Row("Anti-aliasing (FXAA)");
     Check("##fxaa", &s.fxaa);
     Desc("Smooths jagged edges at almost no cost. It softens textures a little; sharpening makes up for it.");

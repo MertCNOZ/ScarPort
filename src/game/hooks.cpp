@@ -105,6 +105,7 @@ constexpr uint32_t kHudDeadZone = 300;
 void SetHudAnchor(bool on) {
     std::lock_guard<std::recursive_mutex> l(d3d::Lock());
     d3d::State().anchor = on && game::g_hud_edges ? kHudDeadZone : 0;
+    d3d::State().hud = on ? 1 : 0;  // the scene effects (ssao, bloom) run before the HUD's first draw
 }
 }  // namespace
 
