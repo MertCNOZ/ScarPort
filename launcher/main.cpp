@@ -50,7 +50,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr const char* kVersion = "1.0.0";
+constexpr const char* kVersion = "1.0.1";
 constexpr const wchar_t* kGameExe = L"SCAR.exe";
 constexpr const char* kTitleId = "4c530002";
 
