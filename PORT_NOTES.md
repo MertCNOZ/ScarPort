@@ -356,3 +356,7 @@ planned. To check: whether this PAL title accepts the NTSC-M/60 Hz report and wh
   test by the user.
 - RACE SUMMARY's X and A were a new atlas, 256x128 f758c82bd4525be6, found in a dump of the user's race; added to
   make_button_icons.ps1.
+- The summary's icons stayed old with the f758c82bd4525be6 overlay in the pack (loaded, no error). Likely cause: a
+  texture whose memory had held a render target was bound as that target (BindTexture matched the address alone),
+  so the pack never saw it. A target now stands for a texture only at the target's own size; a mismatch is logged
+  ("texture ... over a ... target: drawn from guest memory") and so is every overlay made. Waiting on the user's test.
