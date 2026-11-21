@@ -344,3 +344,15 @@ planned. To check: whether this PAL title accepts the NTSC-M/60 Hz report and wh
 - A window the game reads back and sets again equals the stored widened value and keeps its base, so it is not
   widened twice (a likely cause of the squeezed replay). The replay itself was not reached in a test (it needs a
   finished race).
+- Replay (user's test and a capture during it): the replay draws a depth of field. The back buffer is copied and
+  blurred into 834E9080 (512x512), then a full screen pretransformed quad (ps B0165270, blend ONE / INV_SRC_ALPHA)
+  lays the blurred copy over the picture by distance, reading the depth buffer 83B40000 as a 640x480 LIN_A8B8G8R8
+  texture (the D24S8 dword: stencil in R, the 24 bit z from G to A; t0.a is its high byte). The runtime uploaded
+  that texture from guest memory (nothing there: depth is not read back), so everything was out of focus, and as a
+  large linear texture in a screen space draw it was taken for a movie frame and fitted to 4:3, which squeezed the
+  blurred layer into the middle. BindTexture now binds a 32 bit colour texture over a depth target of its size as
+  that target's depth turned into the console's bytes (BindDepthAsColor, pass "depthbytes": z = 1 - reversed depth,
+  24 bits), before the movie check. A race without the replay does not use it (no log line). Waiting on a replay
+  test by the user.
+- RACE SUMMARY's X and A were a new atlas, 256x128 f758c82bd4525be6, found in a dump of the user's race; added to
+  make_button_icons.ps1.
