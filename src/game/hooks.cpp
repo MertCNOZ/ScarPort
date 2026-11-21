@@ -110,34 +110,64 @@ void SetHudAnchor(bool on) {
 }  // namespace
 
 
-// Widescreen without stretching (Hor+): RwCameraSetViewWindow 0xAEB30(camera, &viewWindow) stores the view window's
-// half extents (tangents of the half angles) at camera+0x68 and their reciprocals at +0x70; RenderWare builds the
-// projection and the frustum's clip planes from them. For a camera drawing to the screen (frame buffer raster
-// [camera+0x60] of type 2, rwRASTERTYPECAMERA; type at raster+0x20), the horizontal extent is widened by
-// app::WideFactor while the call runs, so the view is wider and nothing at the new edges is culled; the caller's
-// own value is put back, so a camera set again from what it read keeps its size. Cameras drawing to a texture
-// (type 5) keep their view. The fov setting (70-120, percent of the game's view) scales both extents of a screen
-// camera alike (their tangents), except for the camera the 2D layer and the race HUD are drawn with (made at boot,
-// its view window set from 0x18A748): the HUD is 3D quads in front of it and would shrink with a wider view.
+// Widescreen (Hor+) and field of view. RwCameraSetViewWindow 0xAEB30(camera, vw) stores the view window at
+// camera+0x68 (reciprocals +0x70) and marks the camera's frame dirty, so the projection and the frustum's clip planes
+// are made from it as the camera begins its next update. A screen camera (frame buffer raster [camera+0x60] of type
+// 2, rwRASTERTYPECAMERA; type at raster+0x20) draws with the game's window (its base) times WideFactor * fov across
+// and fov down. It is applied where 0xAEB30 is called, as before (the menus read the window straight back; widened
+// any later they were laid out for 4:3 and drawn off to the right), and again where the camera begins its update
+// (0x99AF0, below): restarting a race wrote the plain 4:3 window without 0xAEB30 (issue #1). A window equal to the
+// one this code wrote is the game's own read back, not a new base, so it is never widened twice. Cameras drawing to a
+// texture (type 5: reflections, mirrors) keep their view. The fov setting (70-120, percent of the game's view) scales
+// both extents alike, except for the camera the 2D layer and the race HUD are drawn with (its view window set from
+// 0x18A748): the HUD is 3D quads in front of it and would shrink with a wider view.
+namespace {
+// per camera: the window the game stored (base) and the widened one this code wrote
+struct ViewWindow {
+    float base_x = 0, base_y = 0, set_x = 0, set_y = 0;
+    bool set = false;
+};
+std::unordered_map<uint32_t, ViewWindow> g_views;
+std::mutex g_views_lock;
+
+// the window a screen camera draws with, from what the game stores now (x, y): a value equal to the one this code
+// stored is the game's own read back, not a new base
+void TargetView(uint32_t camera, bool hud, float x, float y, float& tx, float& ty) {
+    float k = app::WideFactor();
+    float f = hud ? 1.0f : float(std::clamp(app::Get().fov, 70u, 120u)) / 100.0f;
+    std::lock_guard<std::mutex> lock(g_views_lock);
+    ViewWindow& v = g_views[camera];
+    if (!v.set || x != v.set_x || y != v.set_y) {
+        v.base_x = x;
+        v.base_y = y;
+    }
+    tx = v.base_x * k * f;
+    ty = v.base_y * f;
+    v.set_x = tx;
+    v.set_y = ty;
+    v.set = true;
+}
+}  // namespace
+
 X86_EXTERN_FUNC(__imp__sub_000AEB30);
 X86_FUNC(sub_000AEB30) {
     uint32_t camera = X86_MEM32(ctx.esp + 4), vw = X86_MEM32(ctx.esp + 8);
     uint32_t raster = camera ? X86_MEM32(camera + 0x60) : 0;
     uint8_t type = raster ? X86_MEM8(raster + 0x20) : 0;
-    float k = app::WideFactor();
-    bool hud_camera = X86_MEM32(ctx.esp) == 0x18A748;
-    if (hud_camera) RememberHudCamera(camera);
-    float f = hud_camera ? 1.0f : float(std::clamp(app::Get().fov, 70u, 120u)) / 100.0f;
-    float x = vw ? X86_MEMF32(vw) : 0, y = vw ? X86_MEMF32(vw + 4) : 0;
-    bool widen = vw && (k != 1.0f || f != 1.0f) && type == 2;
+    bool hud = X86_MEM32(ctx.esp) == 0x18A748;
+    if (hud) RememberHudCamera(camera);
+    float x = vw ? X86_MEMF32(vw) : 0, y = vw ? X86_MEMF32(vw + 4) : 0, tx = x, ty = y;
+    bool widen = vw && type == 2;
+    if (widen) TargetView(camera, hud || IsHudCamera(camera), x, y, tx, ty);
     static int logged = 0;
     if (logged++ < 8)
-        LOGR("view: camera %08X raster %08X type %u %dx%d window %.4f x %.4f%s (from %08X)", camera, raster, type,
-             raster ? X86_MEM32(raster + 0xC) : 0, raster ? X86_MEM32(raster + 0x10) : 0, x, vw ? X86_MEMF32(vw + 4) : 0.0f,
-             widen ? " widened" : "", X86_MEM32(ctx.esp));
+        LOGR("view: camera %08X raster %08X type %u %dx%d window %.4f x %.4f -> %.4f x %.4f (from %08X)", camera, raster,
+             type, raster ? X86_MEM32(raster + 0xC) : 0, raster ? X86_MEM32(raster + 0x10) : 0, x, y, tx, ty,
+             X86_MEM32(ctx.esp));
+    // the caller's own values are put back after the call: it may set the camera again from them
     if (widen) {
-        X86_MEMF32(vw) = x * k * f;
-        X86_MEMF32(vw + 4) = y * f;
+        X86_MEMF32(vw) = tx;
+        X86_MEMF32(vw + 4) = ty;
     }
     __imp__sub_000AEB30(ctx, base);
     if (widen) {
@@ -147,8 +177,38 @@ X86_FUNC(sub_000AEB30) {
     if (type == 2) ScaleFarPlane(ctx, base, camera);
 }
 
+namespace {
+void WidenView(X86Context& ctx, uint8_t* base, uint32_t camera) {
+    float cx = X86_MEMF32(camera + 0x68), cy = X86_MEMF32(camera + 0x6C), tx, ty;
+    TargetView(camera, IsHudCamera(camera), cx, cy, tx, ty);
+    if (tx == cx && ty == cy) return;
+    static int logged = 0;
+    if (logged++ < 16) LOGR("view: camera %08X window %.4f x %.4f -> %.4f x %.4f", camera, cx, cy, tx, ty);
+    uint32_t esp = ctx.esp, eax = ctx.eax, ecx = ctx.ecx, edx = ctx.edx;
+    ctx.esp -= 16;
+    uint32_t vw = ctx.esp;
+    X86_MEMF32(vw) = tx;
+    X86_MEMF32(vw + 4) = ty;
+    X86_PUSH32(vw);
+    X86_PUSH32(camera);
+    X86_PUSH32(0);  // return address, unused
+    __imp__sub_000AEB30(ctx, base);
+    ctx.esp = esp;
+    ctx.eax = eax;
+    ctx.ecx = ecx;
+    ctx.edx = edx;
+}
+}  // namespace
+
 X86_EXTERN_FUNC(__imp__sub_00099AF0);
 X86_FUNC(sub_00099AF0) {
+    {
+        uint32_t camera = X86_MEM32(ctx.esp + 4);
+        if (camera && ScreenCamera(base, camera)) {
+            WidenView(ctx, base, camera);
+            ScaleFarPlane(ctx, base, camera);
+        }
+    }
     if (IsHudCamera(X86_MEM32(ctx.esp + 4))) SetHudAnchor(true);
     __imp__sub_00099AF0(ctx, base);
 }

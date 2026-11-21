@@ -330,3 +330,17 @@ planned. To check: whether this PAL title accepts the NTSC-M/60 Hz report and wh
   IndyPort's (ScarPort.zip: SCAR.exe, ScarPort.exe, compiler without its work folder, packs, empty assets, VC runtime;
   no game code or files). The zip unpacked into an empty folder compiled the game on first start (about 6 minutes)
   and booted with the pack and a controller.
+
+## Issue #1: 4:3 after a restart, replay (2026-11-21)
+
+- Report (GitHub issue #1): restarting a race goes back to 4:3; the replay after a race looks squeezed.
+- Restart: the race camera (02BE9790 in the test) was 1.1203 x 0.6302 (0.7002 x 0.5252 widened by 4/3 and fov 120)
+  before and 0.7002 x 0.5252 after: the game wrote its plain window without RwCameraSetViewWindow (0xAEB30), so the
+  hook there never saw it. RwCameraBeginUpdate (0x99AF0) now checks every screen camera: what is stored and is not
+  the value this code wrote becomes the camera's base, and the widened window is set through the original 0xAEB30.
+  Checked: after Restart the log shows "window 0.7002 x 0.5252 -> 1.1203 x 0.6302" and the race is widescreen.
+- The widening also stays at 0xAEB30 itself: moved to the begin update only, the menus (which read the HUD camera's
+  window straight after setting it at boot) were laid out for 4:3 and the Load Profile screen drew off to the right.
+- A window the game reads back and sets again equals the stored widened value and keeps its base, so it is not
+  widened twice (a likely cause of the squeezed replay). The replay itself was not reached in a test (it needs a
+  finished race).
